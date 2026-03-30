@@ -6,6 +6,7 @@ import json
 from langchain_core.documents import Document
 import os
 from dotenv import load_dotenv
+import time
 
 load_dotenv()
 
@@ -33,8 +34,6 @@ def build_vector_store():
         model="text-embedding-3-small",
         api_key=os.getenv("OPENAI_API_KEY")
     )
-
-    import time
 
     vectorstore = None
 
@@ -83,7 +82,11 @@ def load_profile_documents():
     docs = []
 
     for key, value in profile.items():
-        docs.append(Document(page_content=f"{key}: {value}"))
+        if isinstance(value, list):
+            text = f"{key}: " + ", ".join(value)
+        else:
+            text = f"{key}: {value}"
+        docs.append(Document(page_content=text))
 
     return docs
 

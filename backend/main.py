@@ -43,6 +43,9 @@ async def health():
 @app.post("/chat")
 async def chat(req: ChatRequest):
 
+    if vector_db is None:
+        return {"response": "Service is still starting up. Please try again in a moment."}
+
     query = req.message
 
     docs = vector_db.similarity_search(query, k=3)
@@ -61,14 +64,15 @@ Question:
 Answer concisely:
 """
 
-    completion = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "You answer questions about Aditya Gupta."},
-            {"role": "user", "content": prompt}
-        ]
-    )
-
-    response = completion.choices[0].message.content
-
-    return {"response": response}
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You answer questions about Aditya Gupta."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        response = completion.choices[0].message.content
+        return {"response": response}
+    except Exception as e:
+        return {"response": "Sorry, I couldn't process that right now. Please try again later."}
