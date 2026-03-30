@@ -6,3 +6,5 @@ langchain-core
 faiss-cpu
 sentence-transformers
 pypdf
+langchain-huggingface
+pydantic
