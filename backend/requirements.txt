@@ -8,3 +8,6 @@ sentence-transformers
 pypdf
 langchain-huggingface
 pydantic
+transformers
+accelerate
+openai

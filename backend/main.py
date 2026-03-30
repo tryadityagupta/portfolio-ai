@@ -2,7 +2,8 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from rag import load_vector_store
-from fastapi.middleware.cors import CORSMiddleware
+from openai import OpenAI
+import os
 
 app = FastAPI()
 
@@ -16,6 +17,8 @@ app.add_middleware(
 )
 
 vector_db = load_vector_store()
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 class ChatRequest(BaseModel):
@@ -31,6 +34,26 @@ async def chat(req: ChatRequest):
 
     context = "\n".join([d.page_content for d in docs])
 
-    response = f"Based on Aditya's resume:\n{context}"
+    prompt = f"""
+You are an AI assistant answering questions about Aditya Gupta.
+
+Context:
+{context}
+
+Question:
+{query}
+
+Answer concisely:
+"""
+
+    completion = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "You answer questions about Aditya Gupta."},
+            {"role": "user", "content": prompt}
+        ]
+    )
+
+    response = completion.choices[0].message.content
 
     return {"response": response}
