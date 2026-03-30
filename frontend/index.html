@@ -1283,7 +1283,7 @@
         for your team!
       </div>
     </div>
-    <div class="chat-intro">Powered by Claude · About Aditya only</div>
+    <div class="chat-intro">Powered by GPT-4o-mini · About Aditya only</div>
     <div class="chat-input-row">
       <input id="chat-input" type="text" placeholder="Ask about skills, projects, availability…" maxlength="300" />
       <button id="chat-send">➤</button>
@@ -1366,17 +1366,17 @@
       addMsg(q, 'user'); input.value = '';
       const typing = addMsg('Thinking…', 'typing');
 
-      const SYSTEM = `You are an AI assistant on Aditya Gupta's personal portfolio website. Answer ONLY questions related to Aditya — his skills, projects, experience, education, and availability. If asked anything unrelated, politely redirect. Be friendly, confident, and concise (2-4 sentences).
+      //       const SYSTEM = `You are an AI assistant on Aditya Gupta's personal portfolio website. Answer ONLY questions related to Aditya — his skills, projects, experience, education, and availability. If asked anything unrelated, politely redirect. Be friendly, confident, and concise (2-4 sentences).
 
-About Aditya:
-- Software Engineer at Optum Global Solutions (Jul 2022–Present), actively seeking AI/ML Engineer roles
-- Education: B.Tech CSE, NIT Silchar, CGPA 8.54/10 (2018–2022)
-- Email: adityagupta.nits2@gmail.com
-- LinkedIn: linkedin.com/in/aditya-gupta-nitsilchar | GitHub: github.com/tryadityagupta
-- Skills: Python, LangChain, FAISS, HuggingFace, scikit-learn, PyTorch, TensorFlow, Keras, Azure, Docker, Kubernetes, MLflow, DVC, Selenium, SQL, Prompt Engineering, RAG, Guardrails, NLP, Computer Vision
-- Projects: (1) RAG Document Chatbot — LangChain+FAISS+TinyLlama+MiniLM, modular RAG pipeline with MMR retrieval; (2) Email Spam Classifier — scikit-learn+Flask, TF-IDF+Logistic Regression, deployed API
-- Key wins: 98% DB query improvement, 25% manual testing reduction, caught production memory leak, "Exceeds Expectations" performance reviews, Q4 Kickoff recognition
-- Available for: Full-time AI/ML roles AND Fiverr freelance AI/ML projects`;
+      // About Aditya:
+      // - Software Engineer at Optum Global Solutions (Jul 2022–Present), actively seeking AI/ML Engineer roles
+      // - Education: B.Tech CSE, NIT Silchar, CGPA 8.54/10 (2018–2022)
+      // - Email: adityagupta.nits2@gmail.com
+      // - LinkedIn: linkedin.com/in/aditya-gupta-nitsilchar | GitHub: github.com/tryadityagupta
+      // - Skills: Python, LangChain, FAISS, HuggingFace, scikit-learn, PyTorch, TensorFlow, Keras, Azure, Docker, Kubernetes, MLflow, DVC, Selenium, SQL, Prompt Engineering, RAG, Guardrails, NLP, Computer Vision
+      // - Projects: (1) RAG Document Chatbot — LangChain+FAISS+TinyLlama+MiniLM, modular RAG pipeline with MMR retrieval; (2) Email Spam Classifier — scikit-learn+Flask, TF-IDF+Logistic Regression, deployed API
+      // - Key wins: 98% DB query improvement, 25% manual testing reduction, caught production memory leak, "Exceeds Expectations" performance reviews, Q4 Kickoff recognition
+      // - Available for: Full-time AI/ML roles AND Fiverr freelance AI/ML projects`;
 
       try {
         const res = await fetch("https://portfolio-ai-qoer.onrender.com/chat", {

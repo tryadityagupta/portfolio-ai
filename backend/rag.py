@@ -1,9 +1,15 @@
-from langchain_core.documents import Document
-import json
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.document_loaders import PyPDFLoader
+import json
+from langchain_core.documents import Document
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 VECTOR_PATH = "vector_store"
 PDF_PATH = "Aditya_Gupta_AI_ML.pdf"
@@ -21,11 +27,36 @@ def build_vector_store():
 
     chunks = splitter.split_documents(docs)
 
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    profile_docs = load_profile_documents()  # ADD THIS
+    chunks.extend(profile_docs)
+
+    embeddings = OpenAIEmbeddings(
+        model="text-embedding-3-small",
+        api_key=os.getenv("OPENAI_API_KEY")
     )
 
-    vectorstore = FAISS.from_documents(chunks, embeddings)
+    import time
+
+    vectorstore = None
+
+    for attempt in range(5):
+        try:
+            print(f"Embedding attempt {attempt+1}...")
+
+            vectorstore = FAISS.from_documents(
+                chunks,
+                embeddings
+            )
+
+            break
+
+        except Exception as e:
+            print("Embedding failed:", e)
+            time.sleep(5)
+
+    if vectorstore is None:
+        raise RuntimeError(
+            "Failed to generate embeddings after multiple attempts")
 
     vectorstore.save_local(VECTOR_PATH)
 
@@ -34,8 +65,9 @@ def build_vector_store():
 
 def load_vector_store():
 
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    embeddings = OpenAIEmbeddings(
+        model="text-embedding-3-small",
+        api_key=os.getenv("OPENAI_API_KEY")
     )
 
     return FAISS.load_local(

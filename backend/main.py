@@ -3,9 +3,20 @@ from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from rag import load_vector_store
 from openai import OpenAI
+from contextlib import asynccontextmanager
 import os
 
-app = FastAPI()
+
+vector_db = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global vector_db
+    vector_db = load_vector_store()
+    yield
+
+app = FastAPI(lifespan=lifespan)
 
 # allow frontend connection
 app.add_middleware(
@@ -16,13 +27,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-vector_db = load_vector_store()
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 class ChatRequest(BaseModel):
     message: str
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
 
 @app.post("/chat")
