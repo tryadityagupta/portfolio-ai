@@ -1,0 +1,5 @@
+backend/Aditya_Gupta_AI_ML.pdf
+frontend/node_modules
+__pycache__/
+*.pyc
+.env

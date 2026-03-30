@@ -1,0 +1,30 @@
+{
+    "name": "Aditya Gupta",
+    "title": "AI/ML Engineer",
+    "location": "Bengaluru, India",
+    "experience": "Software Engineer at Optum Global Solutions since July 2022",
+    "education": "B.Tech in Computer Science from NIT Silchar (CGPA 8.54)",
+    "skills": [
+        "Python",
+        "LangChain",
+        "FAISS",
+        "HuggingFace",
+        "scikit-learn",
+        "PyTorch",
+        "TensorFlow",
+        "Docker",
+        "Kubernetes",
+        "Azure"
+    ],
+    "projects": [
+        "RAG Document Chatbot using LangChain + FAISS + TinyLlama",
+        "Email Spam Classifier using TF-IDF + Logistic Regression"
+    ],
+    "achievements": [
+        "98% database query performance improvement",
+        "Reduced manual testing by 25%",
+        "Recognized at Optum Q4 Kickoff",
+        "Consistently rated Exceeds Expectations"
+    ],
+    "availability": "Open to AI/ML Engineer roles and freelance AI projects"
+}

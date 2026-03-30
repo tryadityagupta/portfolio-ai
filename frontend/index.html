@@ -1,0 +1,1406 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Aditya Gupta – AI/ML Engineer</title>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Syne:wght@700;800&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #070b12;
+      --bg2: #0d1520;
+      --bg3: #111d2e;
+      --accent: #00d4ff;
+      --accent2: #7c3aed;
+      --accent3: #10b981;
+      --text: #e2e8f0;
+      --muted: #64748b;
+      --border: rgba(0, 212, 255, 0.15);
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      font-family: 'Space Grotesk', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      overflow-x: hidden;
+    }
+
+    #neural-bg {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      opacity: 0.35;
+    }
+
+    nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 200;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem 4rem;
+      background: rgba(7, 11, 18, 0.85);
+      backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .nav-logo {
+      font-family: 'Syne', sans-serif;
+      font-size: 1.1rem;
+      font-weight: 800;
+      color: var(--accent);
+      letter-spacing: 0.05em;
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 2rem;
+      list-style: none;
+    }
+
+    .nav-links a {
+      font-size: 0.78rem;
+      font-weight: 500;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      text-decoration: none;
+      transition: color .2s;
+    }
+
+    .nav-links a:hover {
+      color: var(--accent);
+    }
+
+    .hero {
+      position: relative;
+      z-index: 1;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 7rem 4rem 4rem;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    .hero-tag {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      letter-spacing: 0.15em;
+      color: var(--accent3);
+      margin-bottom: 1.2rem;
+      opacity: 0;
+      animation: fadeUp .6s .1s forwards;
+    }
+
+    .hero-name {
+      font-family: 'Syne', sans-serif;
+      font-size: clamp(3.2rem, 7vw, 6rem);
+      font-weight: 800;
+      line-height: 1;
+      color: #fff;
+      margin-bottom: 1rem;
+      opacity: 0;
+      animation: fadeUp .6s .25s forwards;
+    }
+
+    .hero-name .glow {
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero-typewriter {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 1.1rem;
+      color: var(--accent);
+      margin-bottom: 2rem;
+      min-height: 1.8rem;
+      opacity: 0;
+      animation: fadeUp .6s .4s forwards;
+    }
+
+    .cursor {
+      display: inline-block;
+      width: 2px;
+      height: 1.1em;
+      background: var(--accent);
+      animation: blink 1s infinite;
+      vertical-align: text-bottom;
+    }
+
+    @keyframes blink {
+
+      0%,
+      50% {
+        opacity: 1
+      }
+
+      51%,
+      100% {
+        opacity: 0
+      }
+    }
+
+    .hero-bio {
+      font-size: 1rem;
+      line-height: 1.9;
+      color: #94a3b8;
+      max-width: 600px;
+      margin-bottom: 2.5rem;
+      opacity: 0;
+      animation: fadeUp .6s .55s forwards;
+    }
+
+    .hero-bio strong {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .hero-cta {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+      opacity: 0;
+      animation: fadeUp .6s .7s forwards;
+    }
+
+    .btn {
+      padding: .8rem 1.8rem;
+      border-radius: 4px;
+      font-size: .85rem;
+      font-weight: 600;
+      letter-spacing: .05em;
+      text-decoration: none;
+      transition: all .2s;
+      cursor: pointer;
+      border: none;
+      font-family: 'Space Grotesk', sans-serif;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: #fff;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 30px rgba(0, 212, 255, .3);
+    }
+
+    .btn-ghost {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+
+    .btn-ghost:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      transform: translateY(-2px);
+    }
+
+    .scroll-hint {
+      position: absolute;
+      bottom: 2.5rem;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: .5rem;
+      font-size: .7rem;
+      letter-spacing: .15em;
+      text-transform: uppercase;
+      color: var(--muted);
+      opacity: 0;
+      animation: fadeUp .6s 1.2s forwards;
+    }
+
+    .scroll-line {
+      width: 1px;
+      height: 50px;
+      background: linear-gradient(to bottom, var(--accent), transparent);
+      animation: scrollPulse 2s infinite;
+    }
+
+    @keyframes scrollPulse {
+
+      0%,
+      100% {
+        opacity: .3
+      }
+
+      50% {
+        opacity: 1
+      }
+    }
+
+    .section {
+      position: relative;
+      z-index: 1;
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 6rem 4rem;
+    }
+
+    .section-divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    .section-eyebrow {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .7rem;
+      letter-spacing: .2em;
+      color: var(--accent);
+      text-transform: uppercase;
+      margin-bottom: .6rem;
+    }
+
+    .section-title {
+      font-family: 'Syne', sans-serif;
+      font-weight: 800;
+      font-size: clamp(1.8rem, 3vw, 2.5rem);
+      color: #fff;
+      margin-bottom: .8rem;
+    }
+
+    .section-sub {
+      font-size: .95rem;
+      color: var(--muted);
+      margin-bottom: 3rem;
+      max-width: 560px;
+      line-height: 1.7;
+    }
+
+    .stats-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1px;
+      background: var(--border);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+      margin-bottom: 5rem;
+    }
+
+    .stat-box {
+      background: var(--bg2);
+      padding: 2rem 1.5rem;
+      text-align: center;
+      transition: background .2s;
+    }
+
+    .stat-box:hover {
+      background: var(--bg3);
+    }
+
+    .stat-num {
+      font-family: 'Syne', sans-serif;
+      font-size: 2.4rem;
+      font-weight: 800;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      line-height: 1;
+      margin-bottom: .4rem;
+    }
+
+    .stat-lbl {
+      font-size: .72rem;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .timeline {
+      position: relative;
+      padding-left: 2rem;
+    }
+
+    .timeline::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 1px;
+      background: linear-gradient(to bottom, var(--accent), transparent);
+    }
+
+    .timeline-item {
+      position: relative;
+      margin-bottom: 3rem;
+    }
+
+    .timeline-item::before {
+      content: '';
+      position: absolute;
+      left: -2.35rem;
+      top: .4rem;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 12px var(--accent);
+    }
+
+    .tl-meta {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .72rem;
+      color: var(--accent3);
+      letter-spacing: .08em;
+      margin-bottom: .5rem;
+    }
+
+    .tl-role {
+      font-size: 1.15rem;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: .3rem;
+    }
+
+    .tl-company {
+      font-size: .85rem;
+      color: var(--muted);
+      margin-bottom: 1rem;
+    }
+
+    .tl-bullets {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: .55rem;
+    }
+
+    .tl-bullets li {
+      font-size: .875rem;
+      line-height: 1.7;
+      color: #94a3b8;
+      padding-left: 1.2rem;
+      position: relative;
+    }
+
+    .tl-bullets li::before {
+      content: '▸';
+      position: absolute;
+      left: 0;
+      color: var(--accent);
+      font-size: .7rem;
+      top: .2rem;
+    }
+
+    .projects-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.2rem;
+    }
+
+    .project-card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 2rem;
+      transition: all .3s;
+      cursor: default;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .project-card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at top right, rgba(0, 212, 255, .06), transparent 60%);
+      opacity: 0;
+      transition: opacity .3s;
+      pointer-events: none;
+    }
+
+    .project-card:hover {
+      transform: translateY(-5px);
+      border-color: rgba(0, 212, 255, .4);
+      box-shadow: 0 20px 50px rgba(0, 0, 0, .4);
+    }
+
+    .project-card:hover::before {
+      opacity: 1;
+    }
+
+    .project-type {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .65rem;
+      letter-spacing: .15em;
+      text-transform: uppercase;
+      color: var(--accent2);
+      margin-bottom: .8rem;
+    }
+
+    .project-name {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: .7rem;
+    }
+
+    .project-desc {
+      font-size: .875rem;
+      line-height: 1.7;
+      color: #94a3b8;
+      margin-bottom: 1.2rem;
+    }
+
+    .tech-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .4rem;
+      margin-bottom: 1rem;
+    }
+
+    .tech-pill {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .62rem;
+      padding: .2rem .65rem;
+      border-radius: 3px;
+      background: rgba(0, 212, 255, .08);
+      border: 1px solid rgba(0, 212, 255, .2);
+      color: var(--accent);
+    }
+
+    .project-link {
+      font-size: .78rem;
+      color: var(--accent3);
+      text-decoration: none;
+      font-weight: 600;
+      letter-spacing: .05em;
+      display: inline-flex;
+      align-items: center;
+      gap: .3rem;
+      transition: gap .2s;
+    }
+
+    .project-link:hover {
+      gap: .5rem;
+    }
+
+    .skills-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.2rem;
+    }
+
+    .skill-card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1.5rem;
+      transition: all .25s;
+    }
+
+    .skill-card:hover {
+      border-color: rgba(0, 212, 255, .3);
+      background: var(--bg3);
+      transform: translateY(-2px);
+    }
+
+    .skill-card-title {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .68rem;
+      letter-spacing: .15em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 1rem;
+      padding-bottom: .6rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .skill-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .4rem;
+    }
+
+    .skill-chip {
+      font-size: .78rem;
+      padding: .3rem .75rem;
+      border-radius: 3px;
+      background: rgba(255, 255, 255, .04);
+      border: 1px solid rgba(255, 255, 255, .08);
+      color: #94a3b8;
+      transition: all .2s;
+    }
+
+    .skill-chip:hover {
+      background: rgba(124, 58, 237, .1);
+      border-color: rgba(124, 58, 237, .3);
+      color: var(--text);
+    }
+
+    .edu-card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 2.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 2rem;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .edu-card::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 3px;
+      background: linear-gradient(to bottom, var(--accent), var(--accent2));
+    }
+
+    .edu-degree {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: .4rem;
+    }
+
+    .edu-inst {
+      font-size: .9rem;
+      color: var(--muted);
+      margin-bottom: .5rem;
+    }
+
+    .edu-period {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .72rem;
+      color: var(--accent3);
+    }
+
+    .edu-gpa {
+      text-align: right;
+    }
+
+    .edu-gpa-num {
+      font-family: 'Syne', sans-serif;
+      font-size: 2.5rem;
+      font-weight: 800;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      line-height: 1;
+    }
+
+    .edu-gpa-label {
+      font-size: .68rem;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .achievements {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+      margin-top: 2rem;
+    }
+
+    .achieve-chip {
+      display: flex;
+      align-items: center;
+      gap: .6rem;
+      background: rgba(16, 185, 129, .06);
+      border: 1px solid rgba(16, 185, 129, .2);
+      padding: .6rem 1rem;
+      border-radius: 4px;
+      font-size: .82rem;
+      color: var(--text);
+    }
+
+    .contact-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 1rem;
+      max-width: 700px;
+      margin: auto;
+    }
+
+    .contact-card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1.5rem;
+      text-align: center;
+      text-decoration: none;
+      transition: all .2s;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: .5rem;
+    }
+
+    .contact-card:hover {
+      border-color: rgba(0, 212, 255, .4);
+      transform: translateY(-3px);
+      box-shadow: 0 12px 30px rgba(0, 0, 0, .3);
+    }
+
+    .contact-icon {
+      font-size: 1.4rem;
+    }
+
+    .contact-label {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .62rem;
+      letter-spacing: .15em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+
+    .contact-val {
+      font-size: .78rem;
+      color: var(--muted);
+      word-break: break-all;
+    }
+
+    /* CHAT */
+    #chat-toggle {
+      position: fixed;
+      bottom: 2rem;
+      right: 2rem;
+      z-index: 500;
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.4rem;
+      box-shadow: 0 8px 32px rgba(0, 212, 255, .4);
+      transition: transform .2s, box-shadow .2s;
+      animation: pulse-ring 3s infinite;
+    }
+
+    #chat-toggle:hover {
+      transform: scale(1.08);
+    }
+
+    @keyframes pulse-ring {
+
+      0%,
+      100% {
+        box-shadow: 0 0 0 0 rgba(0, 212, 255, .4), 0 8px 32px rgba(0, 212, 255, .4);
+      }
+
+      50% {
+        box-shadow: 0 0 0 10px rgba(0, 212, 255, 0), 0 8px 32px rgba(0, 212, 255, .4);
+      }
+    }
+
+    #chat-window {
+      position: fixed;
+      bottom: 6rem;
+      right: 2rem;
+      z-index: 500;
+      width: 360px;
+      max-width: calc(100vw - 2rem);
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: 0 30px 80px rgba(0, 0, 0, .5);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      transform: scale(0.9) translateY(20px);
+      opacity: 0;
+      transition: transform .25s, opacity .25s;
+      pointer-events: none;
+      max-height: 520px;
+    }
+
+    #chat-window.open {
+      transform: scale(1) translateY(0);
+      opacity: 1;
+      pointer-events: all;
+    }
+
+    .chat-header {
+      padding: 1rem 1.2rem;
+      background: linear-gradient(135deg, rgba(0, 212, 255, .1), rgba(124, 58, 237, .1));
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: .8rem;
+    }
+
+    .chat-avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: .85rem;
+      font-weight: 700;
+      color: #fff;
+      font-family: 'Syne', sans-serif;
+      flex-shrink: 0;
+    }
+
+    .chat-name {
+      font-size: .9rem;
+      font-weight: 600;
+      color: #fff;
+    }
+
+    .chat-status {
+      font-size: .7rem;
+      color: var(--accent3);
+      display: flex;
+      align-items: center;
+      gap: .3rem;
+    }
+
+    .chat-status::before {
+      content: '';
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent3);
+      animation: statusPulse 2s infinite;
+    }
+
+    @keyframes statusPulse {
+
+      0%,
+      100% {
+        opacity: 1
+      }
+
+      50% {
+        opacity: .4
+      }
+    }
+
+    #chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: .8rem;
+      min-height: 200px;
+      max-height: 320px;
+    }
+
+    #chat-messages::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    #chat-messages::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 2px;
+    }
+
+    .msg {
+      max-width: 85%;
+      font-size: .83rem;
+      line-height: 1.6;
+      padding: .65rem .9rem;
+      border-radius: 8px;
+    }
+
+    .msg-bot {
+      background: rgba(0, 212, 255, .08);
+      border: 1px solid rgba(0, 212, 255, .15);
+      color: var(--text);
+      align-self: flex-start;
+      border-bottom-left-radius: 2px;
+    }
+
+    .msg-user {
+      background: linear-gradient(135deg, rgba(0, 212, 255, .15), rgba(124, 58, 237, .15));
+      border: 1px solid rgba(124, 58, 237, .2);
+      color: var(--text);
+      align-self: flex-end;
+      border-bottom-right-radius: 2px;
+    }
+
+    .msg-typing {
+      background: rgba(0, 212, 255, .08);
+      border: 1px solid rgba(0, 212, 255, .15);
+      color: var(--muted);
+      align-self: flex-start;
+      border-bottom-left-radius: 2px;
+      font-style: italic;
+      font-size: .8rem;
+    }
+
+    .chat-input-row {
+      display: flex;
+      gap: .5rem;
+      padding: .8rem 1rem;
+      border-top: 1px solid var(--border);
+      background: var(--bg);
+    }
+
+    #chat-input {
+      flex: 1;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: .55rem .8rem;
+      font-size: .82rem;
+      color: var(--text);
+      outline: none;
+      font-family: 'Space Grotesk', sans-serif;
+      transition: border-color .2s;
+    }
+
+    #chat-input:focus {
+      border-color: rgba(0, 212, 255, .4);
+    }
+
+    #chat-input::placeholder {
+      color: var(--muted);
+    }
+
+    #chat-send {
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      border: none;
+      border-radius: 6px;
+      width: 36px;
+      height: 36px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: .9rem;
+      transition: transform .15s;
+      flex-shrink: 0;
+    }
+
+    #chat-send:hover {
+      transform: scale(1.05);
+    }
+
+    .chat-intro {
+      font-size: .72rem;
+      color: var(--muted);
+      text-align: center;
+      padding: .4rem 0;
+      letter-spacing: .05em;
+    }
+
+    footer {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      padding: 2rem;
+      border-top: 1px solid var(--border);
+      font-size: .75rem;
+      color: var(--muted);
+      letter-spacing: .05em;
+    }
+
+    @keyframes fadeUp {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .reveal {
+      opacity: 0;
+      transform: translateY(30px);
+      transition: opacity .6s, transform .6s;
+    }
+
+    .reveal.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    @media(max-width:900px) {
+      nav {
+        padding: 1rem 1.5rem;
+      }
+
+      .nav-links {
+        display: none;
+      }
+
+      .hero {
+        padding: 6rem 1.5rem 3rem;
+      }
+
+      .section {
+        padding: 4rem 1.5rem;
+      }
+
+      .stats-row {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .projects-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .skills-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .contact-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .edu-card {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+    }
+
+    @media(max-width:560px) {
+      .skills-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .stats-row {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <canvas id="neural-bg"></canvas>
+
+  <nav>
+    <div class="nav-logo">AG/</div>
+    <ul class="nav-links">
+      <li><a href="#about">About</a></li>
+      <li><a href="#experience">Experience</a></li>
+      <li><a href="#projects">Projects</a></li>
+      <li><a href="#skills">Skills</a></li>
+      <li><a href="#education">Education</a></li>
+      <li><a href="#contact">Contact</a></li>
+    </ul>
+  </nav>
+
+  <section class="hero" id="about">
+    <div>
+      <p class="hero-tag">// open to work · AI/ML Engineer · Bengaluru, India</p>
+      <h1 class="hero-name">Hey, I'm <span class="glow">Aditya.</span></h1>
+      <div class="hero-typewriter">
+        <span id="typewriter-text"></span><span class="cursor"></span>
+      </div>
+      <p class="hero-bio">
+        I build things that <strong>think</strong>. After 3+ years shipping production-grade engineering at Optum,
+        I pivoted hard into AI/ML — building RAG pipelines, training classifiers, and obsessing over
+        LLMs. If a problem can be solved with data and a model, I'm already thinking about it.
+      </p>
+      <div class="hero-cta">
+        <a href="mailto:adityagupta.nits2@gmail.com" class="btn btn-primary">Let's Talk →</a>
+        <a href="#projects" class="btn btn-ghost">See My Work</a>
+      </div>
+    </div>
+    <div class="scroll-hint">
+      <span>Scroll</span>
+      <div class="scroll-line"></div>
+    </div>
+  </section>
+
+  <hr class="section-divider" />
+
+  <section class="section" id="stats">
+    <div class="stats-row reveal">
+      <div class="stat-box">
+        <div class="stat-num">3+</div>
+        <div class="stat-lbl">Years in Production</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-num">98%</div>
+        <div class="stat-lbl">DB Query Speedup</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-num">25%</div>
+        <div class="stat-lbl">Testing Automated</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-num">8.54</div>
+        <div class="stat-lbl">GPA · NIT Silchar</div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="section-divider" />
+
+  <section class="section" id="experience">
+    <p class="section-eyebrow">// 01 — Where I've Been</p>
+    <h2 class="section-title">Work Experience</h2>
+    <p class="section-sub">Real-world engineering that ships, scales, and saves production — before I even got to ML.
+    </p>
+
+    <div class="timeline reveal">
+      <div class="timeline-item">
+        <p class="tl-meta">Jul 2022 – Present · Full-time</p>
+        <p class="tl-role">Software Engineer</p>
+        <p class="tl-company">Optum Global Solutions · Bengaluru, KA</p>
+        <ul class="tl-bullets">
+          <li>Built automation frameworks from scratch with Python, Selenium &amp; LeanFT — cut manual testing by 25%.
+          </li>
+          <li>Designed reusable API test suites wired into CI/CD pipelines — zero test debt left in staging.</li>
+          <li>Wrote SQL stored procedures that slashed query times by 98%. That's not a typo.</li>
+          <li>Caught a critical memory leak before it hit production — saved the team a very bad night.</li>
+          <li>Presented technical analyses to stakeholders; led multi-team coordination during high-pressure releases.
+          </li>
+          <li>Consistently rated “Exceeds Expectations” and recognised at Q4 Kickoff for outstanding engineering impact.
+          </li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <hr class="section-divider" />
+
+  <section class="section" id="projects">
+    <p class="section-eyebrow">// 02 — What I've Built</p>
+    <h2 class="section-title">AI/ML Projects</h2>
+    <p class="section-sub">Not toy examples — real pipelines solving real problems.</p>
+
+    <div class="projects-grid reveal">
+      <div class="project-card">
+        <p class="project-type">Generative AI · RAG · LLMs</p>
+        <p class="project-name">RAG Document Chatbot</p>
+        <p class="project-desc">
+          Answers questions over any PDF — with sources. Built a modular pipeline using LangChain, MiniLM embeddings,
+          and a FAISS vector store. Prompt guardrails via TinyLlama. MMR deduplication for retrieval quality.
+          Persistent index, CLI interface, production-minded from day one.
+        </p>
+        <div class="tech-row">
+          <span class="tech-pill">LangChain</span>
+          <span class="tech-pill">FAISS</span>
+          <span class="tech-pill">HuggingFace</span>
+          <span class="tech-pill">TinyLlama</span>
+          <span class="tech-pill">MiniLM</span>
+          <span class="tech-pill">Python</span>
+        </div>
+        <a href="https://github.com/tryadityagupta/rag-document-chatbot" target="_blank" class="project-link">
+          View on GitHub →
+        </a>
+      </div>
+
+      <div class="project-card">
+        <p class="project-type">Machine Learning · NLP · Flask</p>
+        <p class="project-name">Email Spam Classifier</p>
+        <p class="project-desc">
+          End-to-end spam filter: TF-IDF n-grams + Logistic Regression with class balancing. Beats Naive Bayes
+          baseline through thoughtful feature engineering and regex preprocessing. Served in real-time via a
+          Flask API — not just a notebook, an actual product.
+        </p>
+        <div class="tech-row">
+          <span class="tech-pill">Python</span>
+          <span class="tech-pill">scikit-learn</span>
+          <span class="tech-pill">Flask</span>
+          <span class="tech-pill">TF-IDF</span>
+          <span class="tech-pill">NLP</span>
+        </div>
+        <a href="https://github.com/tryadityagupta/email-spam-filter" target="_blank" class="project-link">
+          View on GitHub →
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <hr class="section-divider" />
+
+  <section class="section" id="skills">
+    <p class="section-eyebrow">// 03 — My Toolkit</p>
+    <h2 class="section-title">Technical Skills</h2>
+    <p class="section-sub">Hover to explore. Built through shipping, not just tutorials.</p>
+
+    <div class="skills-grid reveal">
+      <div class="skill-card">
+        <div class="skill-card-title">Programming</div>
+        <div class="skill-list">
+          <span class="skill-chip">Python</span>
+          <span class="skill-chip">C++</span>
+          <span class="skill-chip">SQL</span>
+        </div>
+      </div>
+      <div class="skill-card">
+        <div class="skill-card-title">GenAI &amp; LLMs</div>
+        <div class="skill-list">
+          <span class="skill-chip">LangChain</span>
+          <span class="skill-chip">FAISS</span>
+          <span class="skill-chip">HuggingFace</span>
+          <span class="skill-chip">Sentence-Transformers</span>
+          <span class="skill-chip">RAG</span>
+          <span class="skill-chip">Prompt Engineering</span>
+          <span class="skill-chip">Guardrails</span>
+        </div>
+      </div>
+      <div class="skill-card">
+        <div class="skill-card-title">Machine Learning</div>
+        <div class="skill-list">
+          <span class="skill-chip">scikit-learn</span>
+          <span class="skill-chip">pandas</span>
+          <span class="skill-chip">NumPy</span>
+          <span class="skill-chip">RAGAS</span>
+        </div>
+      </div>
+      <div class="skill-card">
+        <div class="skill-card-title">Deep Learning</div>
+        <div class="skill-list">
+          <span class="skill-chip">PyTorch</span>
+          <span class="skill-chip">TensorFlow</span>
+          <span class="skill-chip">Keras</span>
+        </div>
+      </div>
+      <div class="skill-card">
+        <div class="skill-card-title">Cloud &amp; DevOps</div>
+        <div class="skill-list">
+          <span class="skill-chip">Azure</span>
+          <span class="skill-chip">Docker</span>
+          <span class="skill-chip">Kubernetes</span>
+          <span class="skill-chip">MLflow</span>
+          <span class="skill-chip">DVC</span>
+          <span class="skill-chip">CI/CD</span>
+          <span class="skill-chip">Git</span>
+        </div>
+      </div>
+      <!-- <div class="skill-card">
+        <div class="skill-card-title">Testing &amp; Automation</div>
+        <div class="skill-list">
+          <span class="skill-chip">Selenium</span>
+          <span class="skill-chip">LeanFT</span>
+          <span class="skill-chip">API Testing</span>
+          <span class="skill-chip">NLP</span>
+          <span class="skill-chip">Computer Vision</span>
+        </div>
+      </div> -->
+    </div>
+  </section>
+
+  <hr class="section-divider" />
+
+  <section class="section" id="education">
+    <p class="section-eyebrow">// 04 — Foundation</p>
+    <h2 class="section-title">Education</h2>
+
+    <div class="edu-card reveal">
+      <div>
+        <p class="edu-degree">B.Tech · Computer Science &amp; Engineering</p>
+        <p class="edu-inst">National Institute of Technology (NIT) Silchar</p>
+        <p class="edu-period">Jul 2018 – May 2022</p>
+      </div>
+      <div class="edu-gpa">
+        <div class="edu-gpa-num">8.54<span style="font-size:1.2rem;color:var(--muted)">/10</span></div>
+        <div class="edu-gpa-label">CGPA</div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="section-divider" />
+
+  <section class="section" id="contact">
+    <p class="section-eyebrow">// 05 — Let's Connect</p>
+    <h2 class="section-title">Get in Touch</h2>
+    <p class="section-sub">Hiring for an AI/ML role? Exploring a Fiverr project? Just want to geek out about LLMs? I'm
+      in.</p>
+
+    <div class="contact-grid reveal">
+      <a class="contact-card" href="mailto:adityagupta.nits2@gmail.com">
+        <div class="contact-icon">✉️</div>
+        <div class="contact-label">Email</div>
+        <div class="contact-val">adityagupta.nits2@gmail.com</div>
+      </a>
+      <a class="contact-card" href="https://www.linkedin.com/in/aditya-gupta-nitsilchar/" target="_blank">
+        <div class="contact-icon">💼</div>
+        <div class="contact-label">LinkedIn</div>
+        <div class="contact-val">aditya-gupta-nitsilchar</div>
+      </a>
+      <a class="contact-card" href="https://github.com/tryadityagupta" target="_blank">
+        <div class="contact-icon">⌨️</div>
+        <div class="contact-label">GitHub</div>
+        <div class="contact-val">tryadityagupta</div>
+      </a>
+    </div>
+  </section>
+
+  <footer>© 2026 Aditya Gupta · Built with curiosity, caffeine, and a little AI 🤖</footer>
+
+  <!-- CHAT WIDGET -->
+  <button id="chat-toggle" title="Chat with Aditya's AI">🤖</button>
+
+  <div id="chat-window">
+    <div class="chat-header">
+      <div class="chat-avatar">AG</div>
+      <div>
+        <div class="chat-name">Aditya's AI</div>
+        <div class="chat-status">Online — ask me anything</div>
+      </div>
+    </div>
+    <div id="chat-messages">
+      <div class="msg msg-bot">
+        Hey there! 👋 I'm Aditya's AI assistant. Ask me about his skills, projects, experience, or whether he'd be a fit
+        for your team!
+      </div>
+    </div>
+    <div class="chat-intro">Powered by Claude · About Aditya only</div>
+    <div class="chat-input-row">
+      <input id="chat-input" type="text" placeholder="Ask about skills, projects, availability…" maxlength="300" />
+      <button id="chat-send">➤</button>
+    </div>
+  </div>
+
+  <script>
+    /* NEURAL CANVAS */
+    const canvas = document.getElementById('neural-bg');
+    const ctx = canvas.getContext('2d');
+    let W, H, nodes = [];
+
+    function resize() { W = canvas.width = window.innerWidth; H = canvas.height = window.innerHeight; }
+
+    function initNodes() {
+      nodes = [];
+      const n = Math.floor((W * H) / 14000);
+      for (let i = 0; i < n; i++) {
+        nodes.push({ x: Math.random() * W, y: Math.random() * H, vx: (Math.random() - .5) * .4, vy: (Math.random() - .5) * .4, r: Math.random() * 2 + 1 });
+      }
+    }
+
+    function drawNeural() {
+      ctx.clearRect(0, 0, W, H);
+      for (let i = 0; i < nodes.length; i++) {
+        const a = nodes[i];
+        a.x += a.vx; a.y += a.vy;
+        if (a.x < 0 || a.x > W) a.vx *= -1;
+        if (a.y < 0 || a.y > H) a.vy *= -1;
+        ctx.beginPath(); ctx.arc(a.x, a.y, a.r, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(0,212,255,.6)'; ctx.fill();
+        for (let j = i + 1; j < nodes.length; j++) {
+          const b = nodes[j]; const dx = a.x - b.x, dy = a.y - b.y; const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < 130) {
+            ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+            ctx.strokeStyle = `rgba(0,212,255,${.12 * (1 - dist / 130)})`; ctx.lineWidth = .8; ctx.stroke();
+          }
+        }
+      }
+      requestAnimationFrame(drawNeural);
+    }
+    resize(); initNodes(); drawNeural();
+    window.addEventListener('resize', () => { resize(); initNodes(); });
+
+    /* TYPEWRITER */
+    const phrases = ['I build AI/ML systems.', 'I love RAG pipelines.', 'I turn data into decisions.', 'I ship models to production.', 'Open to AI/ML roles.'];
+    let pi = 0, ci = 0, deleting = false;
+    const tw = document.getElementById('typewriter-text');
+    function type() {
+      const phrase = phrases[pi];
+      if (!deleting) { tw.textContent = phrase.slice(0, ++ci); if (ci === phrase.length) { deleting = true; setTimeout(type, 1800); return; } }
+      else { tw.textContent = phrase.slice(0, --ci); if (ci === 0) { deleting = false; pi = (pi + 1) % phrases.length; } }
+      setTimeout(type, deleting ? 40 : 80);
+    }
+    type();
+
+    /* SCROLL REVEAL */
+    const reveals = document.querySelectorAll('.reveal');
+    const ro = new IntersectionObserver(entries => { entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); }); }, { threshold: .1 });
+    reveals.forEach(r => ro.observe(r));
+
+    /* CHAT */
+    const toggle = document.getElementById('chat-toggle');
+    const win = document.getElementById('chat-window');
+    const msgs = document.getElementById('chat-messages');
+    const input = document.getElementById('chat-input');
+    const send = document.getElementById('chat-send');
+
+    toggle.addEventListener('click', () => { win.classList.toggle('open'); if (win.classList.contains('open')) input.focus(); });
+
+    function addMsg(text, type) {
+      const d = document.createElement('div');
+      d.className = 'msg msg-' + type; d.textContent = text;
+      msgs.appendChild(d); msgs.scrollTop = msgs.scrollHeight;
+      return d;
+    }
+
+    async function sendMessage() {
+      const q = input.value.trim(); if (!q) return;
+      addMsg(q, 'user'); input.value = '';
+      const typing = addMsg('Thinking…', 'typing');
+
+      const SYSTEM = `You are an AI assistant on Aditya Gupta's personal portfolio website. Answer ONLY questions related to Aditya — his skills, projects, experience, education, and availability. If asked anything unrelated, politely redirect. Be friendly, confident, and concise (2-4 sentences).
+
+About Aditya:
+- Software Engineer at Optum Global Solutions (Jul 2022–Present), actively seeking AI/ML Engineer roles
+- Education: B.Tech CSE, NIT Silchar, CGPA 8.54/10 (2018–2022)
+- Email: adityagupta.nits2@gmail.com
+- LinkedIn: linkedin.com/in/aditya-gupta-nitsilchar | GitHub: github.com/tryadityagupta
+- Skills: Python, LangChain, FAISS, HuggingFace, scikit-learn, PyTorch, TensorFlow, Keras, Azure, Docker, Kubernetes, MLflow, DVC, Selenium, SQL, Prompt Engineering, RAG, Guardrails, NLP, Computer Vision
+- Projects: (1) RAG Document Chatbot — LangChain+FAISS+TinyLlama+MiniLM, modular RAG pipeline with MMR retrieval; (2) Email Spam Classifier — scikit-learn+Flask, TF-IDF+Logistic Regression, deployed API
+- Key wins: 98% DB query improvement, 25% manual testing reduction, caught production memory leak, "Exceeds Expectations" performance reviews, Q4 Kickoff recognition
+- Available for: Full-time AI/ML roles AND Fiverr freelance AI/ML projects`;
+
+      try {
+        const res = await fetch("http://127.0.0.1:8000/chat", {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: q
+          })
+        });
+
+        const data = await res.json();
+
+        typing.remove();
+
+        addMsg(data.response, 'bot');
+      } catch (e) {
+        typing.remove();
+        addMsg('Hmm, connection issue. Reach Aditya at adityagupta.nits2@gmail.com!', 'bot');
+      }
+    }
+
+    send.addEventListener('click', sendMessage);
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') sendMessage(); });
+  </script>
+</body>
+
+</html>
