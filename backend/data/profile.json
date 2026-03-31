@@ -3,6 +3,7 @@
     "title": "AI/ML Engineer",
     "location": "Bengaluru, India",
     "experience": "Software Engineer at Optum Global Solutions since July 2022",
+    "optum_work": "At Optum I built Python-based automation frameworks and data pipelines for large-scale healthcare data validation. My work focused on backend Python tooling, API integration, and reusable automation utilities — not manual QA. This deep work with Python and data workflows pushed me toward ML and AI engineering.",
     "education": "B.Tech in Computer Science from NIT Silchar (CGPA 8.54)",
     "skills": [
         "Python",
