@@ -103,7 +103,7 @@ Answer based on the context and the rules in your system instructions:
 
     try:
         completion = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4o",
             max_tokens=250,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
