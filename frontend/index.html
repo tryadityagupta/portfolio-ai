@@ -1056,11 +1056,11 @@
       </div>
       <div class="stat-box">
         <div class="stat-num">98%</div>
-        <div class="stat-lbl">DB Query Speedup</div>
+        <div class="stat-lbl">Faster Runtime · 225s→5s</div>
       </div>
       <div class="stat-box">
-        <div class="stat-num">25%</div>
-        <div class="stat-lbl">Testing Automated</div>
+        <div class="stat-num">0.95</div>
+        <div class="stat-lbl">Email Classifier Macro-F1</div>
       </div>
       <div class="stat-box">
         <div class="stat-num">8.54</div>
@@ -1079,7 +1079,7 @@
 
     <div class="timeline reveal">
       <div class="timeline-item">
-        <p class="tl-meta">Jul 2022 – Present · Full-time</p>
+        <p class="tl-meta">Jul 2022 – Apr 2026 · Full-time</p>
         <p class="tl-role">Software Engineer</p>
         <p class="tl-company">Optum Global Solutions · Bengaluru, KA</p>
         <ul class="tl-bullets">
@@ -1126,6 +1126,28 @@
           <span class="tech-pill">Python</span>
         </div>
         <a href="https://github.com/tryadityagupta/portfolio-ai" target="_blank" class="project-link">
+          View on GitHub →
+        </a>
+      </div>
+
+      <div class="project-card">
+        <p class="project-type">Deep Learning · NLP · Privacy-First</p>
+        <p class="project-name">Email Auto-Classifier &amp; Labeler</p>
+        <p class="project-desc">
+          A layered FastAPI microservice that connects to Gmail over OAuth 2.0 and auto-labels inbox mail into a
+          fixed six-class taxonomy. Fine-tuned a local DistilBERT classifier via knowledge distillation — using
+          GPT-4o-mini as a teacher to bootstrap the dataset — running fully on-device so email content never leaves
+          the machine. Lifted macro-F1 from 0.67 to 0.95 with inverse-frequency class weights.
+        </p>
+        <div class="tech-row">
+          <span class="tech-pill">FastAPI</span>
+          <span class="tech-pill">PyTorch</span>
+          <span class="tech-pill">Hugging Face</span>
+          <span class="tech-pill">DistilBERT</span>
+          <span class="tech-pill">Gmail API</span>
+          <span class="tech-pill">OAuth 2.0</span>
+        </div>
+        <a href="https://github.com/tryadityagupta/email-classifier" target="_blank" class="project-link">
           View on GitHub →
         </a>
       </div>
@@ -1187,6 +1209,7 @@
           <span class="skill-chip">Python</span>
           <span class="skill-chip">C++</span>
           <span class="skill-chip">SQL</span>
+          <span class="skill-chip">FastAPI</span>
         </div>
       </div>
       <div class="skill-card">
@@ -1194,10 +1217,11 @@
         <div class="skill-list">
           <span class="skill-chip">LangChain</span>
           <span class="skill-chip">FAISS</span>
-          <span class="skill-chip">HuggingFace</span>
-          <span class="skill-chip">Sentence-Transformers</span>
+          <span class="skill-chip">OpenAI API</span>
+          <span class="skill-chip">Hugging Face Transformers</span>
           <span class="skill-chip">RAG</span>
           <span class="skill-chip">Prompt Engineering</span>
+          <span class="skill-chip">Agentic AI</span>
           <span class="skill-chip">Guardrails</span>
         </div>
       </div>
@@ -1207,39 +1231,28 @@
           <span class="skill-chip">scikit-learn</span>
           <span class="skill-chip">pandas</span>
           <span class="skill-chip">NumPy</span>
-          <span class="skill-chip">RAGAS</span>
+          <span class="skill-chip">TF-IDF</span>
+          <span class="skill-chip">Fine-tuning</span>
+          <span class="skill-chip">Knowledge Distillation</span>
         </div>
       </div>
       <div class="skill-card">
         <div class="skill-card-title">Deep Learning</div>
         <div class="skill-list">
           <span class="skill-chip">PyTorch</span>
-          <span class="skill-chip">TensorFlow</span>
-          <span class="skill-chip">Keras</span>
+          <span class="skill-chip">Transformers</span>
+          <span class="skill-chip">DistilBERT</span>
         </div>
       </div>
       <div class="skill-card">
-        <div class="skill-card-title">Cloud &amp; DevOps</div>
+        <div class="skill-card-title">Cloud &amp; MLOps</div>
         <div class="skill-list">
-          <span class="skill-chip">Azure</span>
+          <span class="skill-chip">Azure Cloud</span>
           <span class="skill-chip">Docker</span>
-          <span class="skill-chip">Kubernetes</span>
-          <span class="skill-chip">MLflow</span>
-          <span class="skill-chip">DVC</span>
+          <span class="skill-chip">Jenkins</span>
           <span class="skill-chip">CI/CD</span>
-          <span class="skill-chip">Git</span>
         </div>
       </div>
-      <!-- <div class="skill-card">
-        <div class="skill-card-title">Testing &amp; Automation</div>
-        <div class="skill-list">
-          <span class="skill-chip">Selenium</span>
-          <span class="skill-chip">LeanFT</span>
-          <span class="skill-chip">API Testing</span>
-          <span class="skill-chip">NLP</span>
-          <span class="skill-chip">Computer Vision</span>
-        </div>
-      </div> -->
     </div>
   </section>
 
@@ -1395,18 +1408,6 @@
       const q = input.value.trim(); if (!q) return;
       addMsg(q, 'user'); input.value = '';
       const typing = addMsg('Thinking…', 'typing');
-
-      //       const SYSTEM = `You are an AI assistant on Aditya Gupta's personal portfolio website. Answer ONLY questions related to Aditya — his skills, projects, experience, education, and availability. If asked anything unrelated, politely redirect. Be friendly, confident, and concise (2-4 sentences).
-
-      // About Aditya:
-      // - Software Engineer at Optum Global Solutions (Jul 2022–Present), actively seeking AI/ML Engineer roles
-      // - Education: B.Tech CSE, NIT Silchar, CGPA 8.54/10 (2018–2022)
-      // - Email: adityagupta.nits2@gmail.com
-      // - LinkedIn: linkedin.com/in/aditya-gupta-nitsilchar | GitHub: github.com/tryadityagupta
-      // - Skills: Python, LangChain, FAISS, HuggingFace, scikit-learn, PyTorch, TensorFlow, Keras, Azure, Docker, Kubernetes, MLflow, DVC, Selenium, SQL, Prompt Engineering, RAG, Guardrails, NLP, Computer Vision
-      // - Projects: (1) RAG Document Chatbot — LangChain+FAISS+TinyLlama+MiniLM, modular RAG pipeline with MMR retrieval; (2) Email Spam Classifier — scikit-learn+Flask, TF-IDF+Logistic Regression, deployed API
-      // - Key wins: 98% DB query improvement, 25% manual testing reduction, caught production memory leak, "Exceeds Expectations" performance reviews, Q4 Kickoff recognition
-      // - Available for: Full-time AI/ML roles AND Fiverr freelance AI/ML projects`;
 
       try {
         const res = await fetch("https://portfolio-ai-qoer.onrender.com/chat", {
