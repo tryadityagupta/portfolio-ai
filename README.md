@@ -1,8 +1,12 @@
 # Portfolio AI — RAG-Powered Personal Chatbot
 
-A production-deployed AI assistant built on top of a personal portfolio website. Visitors can chat with an AI that answers questions about Aditya Gupta's skills, experience, and projects — powered by a FastAPI backend using Retrieval-Augmented Generation (RAG) with OpenAI embeddings and GPT-4o-mini.
+A production-deployed AI assistant on top of a personal portfolio website. Visitors chat with an
+assistant that answers questions about Aditya Gupta's skills, experience, and projects — powered by a
+FastAPI backend using Retrieval-Augmented Generation (RAG) with OpenAI embeddings and `gpt-4o-mini`.
+Answers are **streamed token-by-token**, so replies start appearing almost instantly.
 
-Live demo: [https://portfolio-ai-qoer.onrender.com](https://portfolio-ai-qoer.onrender.com)
+- **Live site:** [https://ysadityagupta.co.in](https://ysadityagupta.co.in) (static frontend on Vercel)
+- **API:** [https://portfolio-ai-qoer.onrender.com](https://portfolio-ai-qoer.onrender.com) (FastAPI backend on Render)
 
 ---
 
@@ -18,19 +22,11 @@ PORTFOLIO-AI/
 │   │   └── index.pkl             # FAISS metadata
 │   ├── .env                      # Local environment variables (not committed)
 │   ├── Aditya_Gupta_AI_ML.pdf    # Source resume/document for RAG
-│   ├── main.py                   # FastAPI app with lifespan-based vector store loading
+│   ├── main.py                   # FastAPI app: lifespan loading, async + streaming /chat
 │   ├── rag.py                    # Embedding, vector store build/load, profile doc loader
-│   ├── requirements.txt          # Python dependencies
-│   └── test_openai.py            # Quick OpenAI connectivity test
+│   └── requirements.txt          # Python dependencies
 ├── frontend/
-│   ├── src/
-│   │   ├── assets/               # Static assets
-│   │   ├── App.tsx
-│   │   └── main.tsx
-│   ├── index.html                # Main portfolio page with embedded chat widget
-│   ├── package.json
-│   ├── vite.config.ts
-│   └── tsconfig.json
+│   └── index.html                # Single-page portfolio + streaming chat widget (static)
 └── .gitignore
 ```
 
@@ -40,23 +36,33 @@ PORTFOLIO-AI/
 
 | Layer | Technology |
 |---|---|
-| Frontend | HTML, CSS, Vanilla JS (chat widget) + React + TypeScript + Vite |
-| Backend | FastAPI (Python) |
+| Frontend | Static HTML, CSS, vanilla JS (single-page portfolio + streaming chat widget) |
+| Backend | FastAPI (Python), async endpoints |
 | Embeddings | OpenAI `text-embedding-3-small` |
 | Vector Store | FAISS (CPU) |
-| LLM | GPT-4o-mini |
+| LLM | OpenAI `gpt-4o-mini` (streaming) |
 | RAG Framework | LangChain |
-| Deployment | Render (free tier) |
+| Deployment | Backend on Render · Frontend on Vercel (custom domain via GoDaddy DNS) |
 
 ---
 
 ## How It Works
 
-1. **At build time** — `rag.py` loads the resume PDF and `profile.json`, splits them into chunks, embeds each chunk using OpenAI's `text-embedding-3-small` model, and saves the resulting FAISS index locally.
+1. **At build time** — `rag.py` loads the resume PDF and `profile.json`, splits them into chunks, embeds
+   each chunk using OpenAI's `text-embedding-3-small`, and saves the resulting FAISS index locally.
 
-2. **At server startup** — the FastAPI lifespan event loads the pre-built FAISS vector store into memory. This happens after the app binds to its port, so it does not block Render's health check.
+2. **At server startup** — a FastAPI `lifespan` event loads the pre-built FAISS index into memory. This
+   runs *after* the app binds to its port, so the `/health` check passes before this heavy I/O begins.
 
-3. **At query time** — the user's message is embedded, the top-3 most relevant chunks are retrieved from FAISS, and these are injected as context into a GPT-4o-mini prompt. The model answers only about Aditya.
+3. **At query time:**
+   - **Retrieval** — the user's message is embedded and the top-3 most relevant chunks are pulled from
+     FAISS (`asimilarity_search`, the async variant).
+   - **Augment** — those chunks are injected as context into the prompt (the "A" in RAG).
+   - **Generation** — `gpt-4o-mini` answers, and tokens are **streamed** back to the browser via a
+     `StreamingResponse`. The chat widget appends each piece to the bubble as it arrives.
+
+The non-blocking `AsyncOpenAI` client is used throughout, so a slow OpenAI call for one visitor doesn't
+freeze the server for others (concurrency).
 
 ---
 
@@ -67,38 +73,43 @@ PORTFOLIO-AI/
 ```bash
 cd backend
 
-# Create and activate virtual environment
 python -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
 
-# Install dependencies
 pip install -r requirements.txt
 
-# Add your OpenAI API key
 echo "OPENAI_API_KEY=sk-..." > .env
 
-# Build the vector store (only needed once, or after updating the PDF/profile)
+# Build the vector store (once, and after any change to the PDF or profile.json)
 python rag.py
 
 # Run the server
 uvicorn main:app --reload
 ```
 
-The API will be available at `http://localhost:8000`.
+The API runs at `http://localhost:8000`. The `/chat` endpoint returns a **plain-text stream**, so test
+it with `--no-buffer` to watch it arrive live:
+
+```bash
+curl http://localhost:8000/health
+
+curl --no-buffer -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What projects has Aditya built?"}'
+```
 
 ### Frontend
 
+The frontend is a single static `index.html` — no build step:
+
 ```bash
 cd frontend
-npm install
-npm run dev
+python -m http.server 5500
 ```
 
-### Test OpenAI connectivity
-
-```bash
-python test_openai.py
-```
+Open `http://localhost:5500`. By default the chat widget calls the deployed Render API. To test against a
+**local** backend, temporarily change the `fetch(...)` URL in `index.html` from the `onrender.com` address
+to `http://localhost:8000/chat`, then change it back before deploying.
 
 ---
 
@@ -106,22 +117,15 @@ python test_openai.py
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/health` | Health check — returns `{"status": "ok"}` |
-| POST | `/chat` | Chat endpoint — accepts `{"message": "..."}`, returns `{"response": "..."}` |
-
-### Example
-
-```bash
-curl -X POST https://portfolio-ai-qoer.onrender.com/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "What are Aditya's skills?"}'
-```
+| GET | `/health` | Health check — returns `{"status": "ok"}`. Also used by the keep-warm pinger. |
+| POST | `/chat` | Accepts `{"message": "..."}`, returns a **streaming plain-text** response. |
 
 ---
 
 ## Rebuilding the Vector Store
 
-If you update `Aditya_Gupta_AI_ML.pdf` or `data/profile.json`, you need to rebuild and re-commit the vector store:
+If you update `Aditya_Gupta_AI_ML.pdf` or `data/profile.json`, rebuild and re-commit the index — the
+chatbot reads the FAISS index, **not** the JSON/PDF directly:
 
 ```bash
 cd backend
@@ -133,30 +137,80 @@ git push
 
 ---
 
-## Deployment (Render)
+## Deployment
+
+### Backend (Render)
 
 - **Service type**: Web Service (Python)
 - **Build command**: `pip install -r requirements.txt`
 - **Start command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`
 - **Environment variable**: `OPENAI_API_KEY` set in Render dashboard → Environment tab
 
-> **Note**: The free tier spins down after inactivity, which can delay the first request by ~50 seconds. The `/health` endpoint helps Render detect when the service is ready.
+### Keeping the service warm (cold-start fix)
+
+Render's free tier spins the service **down** after ~15 minutes of no traffic. The next request then pays
+a **cold start** (~15–20s) while the container boots and the FAISS index reloads into memory. This delay
+is from Render, not the model — the LLM choice does not affect it.
+
+Fix: point a free uptime monitor (e.g. UptimeRobot or cron-job.org) at `/health` every ~10 minutes so the
+service never goes idle. `/health` makes **no OpenAI call**, so this costs **zero tokens** — it only uses
+Render compute hours. (The free tier's ~750 instance-hours/month is roughly one always-on service, so
+there's little headroom left for other free services.) The paid Starter tier never spins down if the
+keep-warm approach isn't enough.
+
+### Frontend (Vercel + custom domain)
+
+- **Framework Preset**: Other (static — no build step)
+- **Root Directory**: `frontend`
+- Pushing to the connected Git repo triggers an automatic deploy.
+- **Custom domain** (`ysadityagupta.co.in`) registered at GoDaddy, DNS pointing at Vercel:
+  - `A` record on `@` → `76.76.21.21`
+  - `CNAME` on `www` → `cname.vercel-dns.com`
 
 ---
 
 ## Key Engineering Decisions
 
-### Why OpenAI Embeddings instead of HuggingFace?
+### Why stream the response?
 
-The original implementation used `sentence-transformers/all-MiniLM-L6-v2` (HuggingFace). This caused Render deployments to time out because the model download (~400 MB) plus `transformers`, `accelerate`, and `torch` pushed the total install size over 1 GB — well beyond Render's free tier memory and build time limits. Switching to `OpenAIEmbeddings(model="text-embedding-3-small")` eliminated all heavyweight dependencies and replaced the local model download with a lightweight API call.
+Previously the endpoint waited for the *entire* completion and returned one JSON blob, so the user stared
+at a "Thinking…" placeholder for the full generation. Streaming sends tokens as they're produced, so the
+first words appear in well under a second. This cuts **perceived latency** dramatically even when total
+generation time is unchanged — the metric that improves is **time-to-first-token (TTFT)**.
+
+### Why `gpt-4o-mini` instead of a larger / reasoning model?
+
+The task is grounded, single-pass Q&A over a small retrieved context — not open-ended reasoning. A small
+fast model answers this just as well, far cheaper, and with lower latency. A larger reasoning model would
+*add* latency (it thinks before answering) for no quality gain here.
+
+### Why `AsyncOpenAI` and `asimilarity_search`?
+
+The endpoint is `async`, but the old code called the **synchronous** OpenAI client, which blocked the
+event loop and forced requests to queue one behind another. The async client and async similarity search
+let the server handle concurrent visitors without serializing them. (This improves **concurrency**, not
+the latency of a single request.)
+
+### Why OpenAI embeddings instead of HuggingFace?
+
+The original used `sentence-transformers/all-MiniLM-L6-v2`, whose model download (~400 MB) plus `torch`/
+`transformers`/`accelerate` pushed the install over Render's free-tier limits and timed out deploys.
+Switching to `text-embedding-3-small` removed all heavyweight dependencies in favor of a light API call.
 
 ### Why lifespan-based vector store loading?
 
-The original code ran `vector_db = load_vector_store()` at module import time, before the app bound to its port. On Render, this meant the health check failed during startup because the app wasn't listening yet. Moving it into a FastAPI `@asynccontextmanager lifespan` event ensures the app starts accepting requests first, then loads the vector store.
+Loading the index at module import (before the app bound to its port) made Render's health check fail
+during startup. Moving it into a FastAPI `lifespan` event lets the app accept requests first, then load.
 
 ### Why commit the vector store to git?
 
-The FAISS index is pre-built locally and committed alongside the code. This means Render never needs to run embeddings at deploy time — it just loads the existing index from disk. Avoids unnecessary OpenAI API calls on every deploy and keeps startup fast.
+The FAISS index is pre-built locally and committed with the code, so Render just loads it from disk —
+no embeddings at deploy time, no extra API calls, faster startup.
+
+### Why a static frontend?
+
+A single hand-written `index.html` (inline CSS/JS) has no framework runtime to bundle, so it serves
+statically with no build step and deploys instantly.
 
 ---
 
