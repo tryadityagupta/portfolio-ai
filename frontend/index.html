@@ -1302,7 +1302,7 @@
       <a class="contact-card" href="https://www.ysadityagupta.co.in/" target="_blank">
         <div class="contact-icon">🤖</div>
         <div class="contact-label">Live Demo</div>
-        <div class="contact-val">ysadityagupta.co.in/</div>
+        <div class="contact-val">ysadityagupta.co.in</div>
       </a>
     </div>
   </section>
@@ -1326,7 +1326,7 @@
         for your team!
       </div>
     </div>
-    <div class="chat-intro">Powered by GPT-4o · About Aditya only</div>
+    <div class="chat-intro">Powered by GPT-4o mini · About Aditya only</div>
     <div class="chat-input-row">
       <input id="chat-input" type="text" placeholder="Ask about skills, projects, availability…" maxlength="300" />
       <button id="chat-send">➤</button>
@@ -1418,11 +1418,21 @@
           })
         });
 
-        const data = await res.json();
+        // The server now sends the answer as a STREAM of text pieces instead
+        // of one finished JSON blob. We read it piece by piece and append each
+        // piece to the same bot bubble, so the answer "types out" live.
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
 
         typing.remove();
+        const bot = addMsg('', 'bot');   // empty bubble we keep filling
 
-        addMsg(data.response, 'bot');
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;                       // stream finished
+          bot.textContent += decoder.decode(value, { stream: true });
+          msgs.scrollTop = msgs.scrollHeight;     // keep scrolled to newest text
+        }
       } catch (e) {
         typing.remove();
         addMsg('Hmm, connection issue. Reach Aditya at adityagupta.nits2@gmail.com!', 'bot');
