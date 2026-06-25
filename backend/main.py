@@ -1,9 +1,10 @@
 from fastapi import FastAPI
-from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-from rag import load_vector_store
-from openai import OpenAI
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from contextlib import asynccontextmanager
+from openai import AsyncOpenAI
+from rag import load_vector_store
 import os
 
 
@@ -12,13 +13,17 @@ vector_db = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Runs ONCE, right after the server starts listening on its port.
+    # We load the FAISS index into memory here (not at import time) so the
+    # /health check can answer first and Render doesn't mark the deploy as failed.
     global vector_db
     vector_db = load_vector_store()
     yield
 
+
 app = FastAPI(lifespan=lifespan)
 
-# allow frontend connection
+# CORS: lets the browser frontend (a different domain) call this API.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,8 +32,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# AsyncOpenAI = the non-blocking client. We can "await" its calls, so while we
+# wait on OpenAI's network response the server is free to handle other users.
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 class ChatRequest(BaseModel):
@@ -77,40 +83,59 @@ If asked about his work at Optum or his day-to-day, always frame it like this:
 """
 
 
-@app.post("/chat")
-async def chat(req: ChatRequest):
-
-    if vector_db is None:
-        return {"response": "Service is still starting up. Please try again in a moment."}
-
-    query = req.message
-
-    docs = vector_db.similarity_search(query, k=3)
-
-    context = "\n".join([d.page_content for d in docs])
-
-    prompt = f"""
+def build_prompt(context: str, question: str) -> str:
+    return f"""
 You are an AI assistant answering questions about Aditya Gupta.
 
 Context about Aditya Gupta:
 {context}
 
 Question:
-{query}
+{question}
 
 Answer based on the context and the rules in your system instructions:
 """
 
-    try:
-        completion = client.chat.completions.create(
-            model="gpt-4o",
-            max_tokens=250,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt}
-            ]
-        )
-        response = completion.choices[0].message.content
-        return {"response": response}
-    except Exception as e:
-        return {"response": "Sorry, I couldn't process that right now. Please try again later."}
+
+@app.post("/chat")
+async def chat(req: ChatRequest):
+
+    # If a user arrives during the few seconds of cold start, the index isn't
+    # loaded yet. We still answer as a text stream so the frontend reads every
+    # reply the same way.
+    if vector_db is None:
+        async def not_ready():
+            yield "Service is still starting up. Please try again in a moment."
+        return StreamingResponse(not_ready(), media_type="text/plain")
+
+    # 1) RETRIEVAL — embed the question and pull the top-3 most relevant chunks.
+    #    asimilarity_search is the async version: the query-embedding call to
+    #    OpenAI happens without blocking the event loop.
+    docs = await vector_db.asimilarity_search(req.message, k=3)
+    context = "\n".join(d.page_content for d in docs)
+
+    # 2) AUGMENT — stuff that retrieved context into the prompt (the "A" in RAG).
+    prompt = build_prompt(context, req.message)
+
+    # 3) GENERATION — stream tokens back to the browser as the model produces
+    #    them, instead of waiting for the whole answer. This is what makes the
+    #    reply start appearing almost immediately (low time-to-first-token).
+    async def token_stream():
+        try:
+            stream = await client.chat.completions.create(
+                model="gpt-4o-mini",
+                max_tokens=250,
+                stream=True,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            async for chunk in stream:
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    yield delta
+        except Exception:
+            yield "Sorry, I couldn't process that right now. Please try again later."
+
+    return StreamingResponse(token_stream(), media_type="text/plain")
