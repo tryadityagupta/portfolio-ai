@@ -158,6 +158,8 @@ Render compute hours. (The free tier's ~750 instance-hours/month is roughly one 
 there's little headroom left for other free services.) The paid Starter tier never spins down if the
 keep-warm approach isn't enough.
 
+Active keep-warm pinger: cron-job.org job #7917947, every 14 min from 7 am to 10 pm on /health — this consumes most of the render free tier workspace's 750 free instance-hours, so disable it before deploying other free Render services
+
 ### Frontend (Vercel + custom domain)
 
 - **Framework Preset**: Other (static — no build step)
