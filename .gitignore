@@ -1,4 +1,5 @@
 backend/Aditya_Gupta_AI_ML.pdf
+backend/vector_store/
 __pycache__/
 *.pyc
 .env
