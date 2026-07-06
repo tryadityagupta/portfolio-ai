@@ -1,11 +1,14 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from openai import AsyncOpenAI
-from rag import load_vector_store
+import json
 import os
+
+from rag import load_vector_store, build_vector_store
+import projects
 
 
 vector_db = None
@@ -14,8 +17,8 @@ vector_db = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Runs ONCE, right after the server starts listening on its port.
-    # We load the FAISS index into memory here (not at import time) so the
-    # /health check can answer first and Render doesn't mark the deploy as failed.
+    # We load (or build) the FAISS index here so /health can answer first and
+    # Render doesn't mark the deploy as failed during a cold start.
     global vector_db
     vector_db = load_vector_store()
     yield
@@ -32,18 +35,40 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# AsyncOpenAI = the non-blocking client. We can "await" its calls, so while we
-# wait on OpenAI's network response the server is free to handle other users.
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# A shared secret only YOU know. Set it in .env (ADMIN_TOKEN=something-long) for
+# local testing, and in Render's Environment tab for production — the two are
+# separate copies. The public /projects and /chat endpoints don't need it; only
+# the hide/unhide controls do. Without it set, the admin endpoints refuse to run.
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
+
+# Path resolved relative to this file, not the working directory.
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+OVERRIDES_PATH = os.path.join(_BASE_DIR, "data", "project_overrides.json")
 
 
 class ChatRequest(BaseModel):
     message: str
 
 
+class RepoRequest(BaseModel):
+    repo: str
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# PUBLIC: the frontend calls this to draw the project cards.
+# Hidden repos are already removed inside get_visible_projects(), so they
+# never reach the browser.
+# ---------------------------------------------------------------------------
+@app.get("/projects")
+async def list_projects():
+    return {"projects": projects.get_visible_projects()}
 
 
 SYSTEM_PROMPT = """
@@ -100,26 +125,28 @@ Answer based on the context and the rules in your system instructions:
 @app.post("/chat")
 async def chat(req: ChatRequest):
 
-    # If a user arrives during the few seconds of cold start, the index isn't
-    # loaded yet. We still answer as a text stream so the frontend reads every
-    # reply the same way.
     if vector_db is None:
         async def not_ready():
             yield "Service is still starting up. Please try again in a moment."
         return StreamingResponse(not_ready(), media_type="text/plain")
 
-    # 1) RETRIEVAL — embed the question and pull the top-3 most relevant chunks.
-    #    asimilarity_search is the async version: the query-embedding call to
-    #    OpenAI happens without blocking the event loop.
-    docs = await vector_db.asimilarity_search(req.message, k=3)
-    context = "\n".join(d.page_content for d in docs)
+    # 1) RETRIEVAL. We pull a few EXTRA chunks (k=6) then drop any that belong
+    #    to a currently-hidden repo, and keep the best 3. This is a live safety
+    #    net: even if the index was built before you hid something, the hidden
+    #    project's text can't reach the model on this request. Compared
+    #    case-insensitively because repo names on GitHub can be any case.
+    hidden = projects.get_hidden_set()  # lowercased
+    docs = await vector_db.asimilarity_search(req.message, k=6)
+    visible_docs = [
+        d for d in docs
+        if (d.metadata.get("repo") or "").lower() not in hidden
+    ][:3]
+    context = "\n".join(d.page_content for d in visible_docs)
 
-    # 2) AUGMENT — stuff that retrieved context into the prompt (the "A" in RAG).
+    # 2) AUGMENT — stuff the retrieved context into the prompt (the "A" in RAG).
     prompt = build_prompt(context, req.message)
 
-    # 3) GENERATION — stream tokens back to the browser as the model produces
-    #    them, instead of waiting for the whole answer. This is what makes the
-    #    reply start appearing almost immediately (low time-to-first-token).
+    # 3) GENERATION — stream tokens back to the browser as they're produced.
     async def token_stream():
         try:
             stream = await client.chat.completions.create(
@@ -139,3 +166,82 @@ async def chat(req: ChatRequest):
             yield "Sorry, I couldn't process that right now. Please try again later."
 
     return StreamingResponse(token_stream(), media_type="text/plain")
+
+
+# ---------------------------------------------------------------------------
+# ADMIN (token-protected): the hide/unhide controls used by admin.html.
+# ---------------------------------------------------------------------------
+
+def _check_admin(token: str | None):
+    if not ADMIN_TOKEN:
+        raise HTTPException(
+            503, "Admin controls are disabled (ADMIN_TOKEN not set).")
+    if token != ADMIN_TOKEN:
+        raise HTTPException(401, "Invalid admin token.")
+
+
+def _read_overrides() -> dict:
+    with open(OVERRIDES_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _write_overrides(data: dict):
+    with open(OVERRIDES_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def _rebuild_index():
+    """Re-embed from the current visible list, then swap the loaded index."""
+    global vector_db
+    projects.invalidate_cache()
+    build_vector_store()
+    vector_db = load_vector_store()
+
+
+@app.get("/admin/projects")
+async def admin_list(x_admin_token: str | None = Header(default=None)):
+    """Every owned repo plus whether it's currently hidden — powers the toggles."""
+    _check_admin(x_admin_token)
+    import github_sync
+    hidden = projects.get_hidden_set()  # lowercased
+    repos = github_sync.fetch_repos()
+    return {
+        "repos": [
+            {"repo": r["name"], "hidden": r["name"].lower() in hidden,
+             "description": r.get("description")}
+            for r in repos
+        ],
+        "hidden": sorted(hidden),
+    }
+
+
+@app.post("/admin/hide")
+async def admin_hide(req: RepoRequest, bg: BackgroundTasks,
+                     x_admin_token: str | None = Header(default=None)):
+    _check_admin(x_admin_token)
+    data = _read_overrides()
+    hidden = set(data.get("hidden", []))
+    hidden.add(req.repo)
+    data["hidden"] = sorted(hidden)
+    _write_overrides(data)
+    projects.invalidate_cache()
+    # Rebuild the chatbot's memory in the background so the response is instant.
+    bg.add_task(_rebuild_index)
+    return {"ok": True, "hidden": data["hidden"],
+            "note": "Frontend updates now. Chatbot forgets it within a few seconds. "
+                    "Commit project_overrides.json to make this permanent across redeploys."}
+
+
+@app.post("/admin/unhide")
+async def admin_unhide(req: RepoRequest, bg: BackgroundTasks,
+                       x_admin_token: str | None = Header(default=None)):
+    _check_admin(x_admin_token)
+    data = _read_overrides()
+    hidden = set(data.get("hidden", []))
+    # Remove case-insensitively so a differently-cased entry still clears.
+    data["hidden"] = sorted(h for h in hidden if h.lower() != req.repo.lower())
+    _write_overrides(data)
+    projects.invalidate_cache()
+    bg.add_task(_rebuild_index)
+    return {"ok": True, "hidden": data["hidden"],
+            "note": "Project is public again. Commit project_overrides.json to persist."}

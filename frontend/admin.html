@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Portfolio — Project Visibility</title>
+    <style>
+        :root {
+            --bg: #0d0d0f;
+            --card: #17171b;
+            --line: #2a2a30;
+            --text: #e8e8ea;
+            --muted: #9a9aa2;
+            --accent: #6ee7b7;
+            --danger: #f87171;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            padding: 32px 16px;
+        }
+
+        .wrap {
+            max-width: 760px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-size: 22px;
+            margin: 0 0 4px;
+        }
+
+        p.sub {
+            color: var(--muted);
+            margin: 0 0 24px;
+            font-size: 14px;
+        }
+
+        .gate,
+        .panel {
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            padding: 20px;
+        }
+
+        .panel {
+            display: none;
+        }
+
+        input {
+            width: 100%;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid var(--line);
+            background: #101014;
+            color: var(--text);
+            font-size: 14px;
+        }
+
+        button {
+            cursor: pointer;
+            border: none;
+            border-radius: 8px;
+            padding: 10px 14px;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .primary {
+            background: var(--accent);
+            color: #06281c;
+            margin-top: 12px;
+        }
+
+        .row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 14px 0;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .row:last-child {
+            border-bottom: none;
+        }
+
+        .name {
+            font-weight: 600;
+            font-size: 15px;
+        }
+
+        .desc {
+            color: var(--muted);
+            font-size: 12px;
+            margin-top: 2px;
+            max-width: 460px;
+        }
+
+        .toggle {
+            min-width: 92px;
+        }
+
+        .toggle.shown {
+            background: rgba(110, 231, 183, .15);
+            color: var(--accent);
+            border: 1px solid rgba(110, 231, 183, .4);
+        }
+
+        .toggle.hidden {
+            background: rgba(248, 113, 113, .12);
+            color: var(--danger);
+            border: 1px solid rgba(248, 113, 113, .4);
+        }
+
+        .note {
+            font-size: 12px;
+            color: var(--muted);
+            margin-top: 20px;
+            line-height: 1.5;
+        }
+
+        pre {
+            background: #101014;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 12px;
+            overflow: auto;
+            font-size: 12px;
+            color: var(--accent);
+        }
+
+        .err {
+            color: var(--danger);
+            font-size: 13px;
+            margin-top: 8px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="wrap">
+        <h1>Project Visibility</h1>
+        <p class="sub">Toggle which GitHub projects appear on your portfolio and in the chatbot.</p>
+
+        <!-- Step 1: enter the admin token (kept only for this browser session) -->
+        <div class="gate" id="gate">
+            <label for="token" style="font-size:13px;color:var(--muted)">Admin token</label>
+            <input id="token" type="password" placeholder="your ADMIN_TOKEN" />
+            <button class="primary" onclick="unlock()">Unlock</button>
+            <div class="err" id="gate-err"></div>
+        </div>
+
+        <!-- Step 2: the toggle list -->
+        <div class="panel" id="panel">
+            <div id="rows"></div>
+            <div class="note" id="commit-note"></div>
+        </div>
+    </div>
+
+    <script>
+        // Same backend the main site talks to. If you rename the service, change this.
+        const API_BASE =
+            location.hostname === "localhost" || location.hostname === "127.0.0.1"
+                ? "http://localhost:8000"
+                : "https://portfolio-ai-qoer.onrender.com";
+        let TOKEN = "";
+
+        function headers() {
+            return { "Content-Type": "application/json", "X-Admin-Token": TOKEN };
+        }
+
+        async function unlock() {
+            TOKEN = document.getElementById('token').value.trim();
+            const err = document.getElementById('gate-err');
+            err.textContent = "";
+            try {
+                const res = await fetch(`${API_BASE}/admin/projects`, { headers: headers() });
+                if (res.status === 401) { err.textContent = "Wrong token."; return; }
+                if (res.status === 503) { err.textContent = "ADMIN_TOKEN isn't set on the server."; return; }
+                if (!res.ok) { err.textContent = "Server error (" + res.status + ")."; return; }
+                const data = await res.json();
+                sessionStorage.setItem("adm", TOKEN);   // survives refresh, not a new tab
+                document.getElementById('gate').style.display = "none";
+                document.getElementById('panel').style.display = "block";
+                render(data);
+            } catch (e) {
+                err.textContent = "Could not reach the backend.";
+            }
+        }
+
+        function render(data) {
+            const rows = document.getElementById('rows');
+            rows.innerHTML = "";
+            data.repos.forEach(r => {
+                const div = document.createElement('div');
+                div.className = "row";
+                div.innerHTML = `
+          <div>
+            <div class="name">${r.repo}</div>
+            <div class="desc">${r.description ? escapeHtml(r.description) : "—"}</div>
+          </div>
+          <button class="toggle ${r.hidden ? 'hidden' : 'shown'}"
+                  onclick="flip('${r.repo}', ${r.hidden})">
+            ${r.hidden ? 'Hidden' : 'Shown'}
+          </button>`;
+                rows.appendChild(div);
+            });
+            showCommitNote(data.hidden);
+        }
+
+        async function flip(repo, isHidden) {
+            const path = isHidden ? "/admin/unhide" : "/admin/hide";
+            try {
+                const res = await fetch(`${API_BASE}${path}`, {
+                    method: "POST", headers: headers(),
+                    body: JSON.stringify({ repo })
+                });
+                const data = await res.json();
+                if (!res.ok) { alert(data.detail || "Failed."); return; }
+                // Refresh the whole list so states stay in sync.
+                const listRes = await fetch(`${API_BASE}/admin/projects`, { headers: headers() });
+                render(await listRes.json());
+            } catch (e) {
+                alert("Network error.");
+            }
+        }
+
+        function showCommitNote(hidden) {
+            const note = document.getElementById('commit-note');
+            const snippet = JSON.stringify({ hidden }, null, 2);
+            note.innerHTML = `
+        <strong>Live now.</strong> The website updates immediately and the chatbot
+        forgets/relearns a hidden project within a few seconds.<br><br>
+        Render wipes changes on redeploy, so to make this <em>permanent</em>, set the
+        <code>"hidden"</code> list in <code>backend/data/project_overrides.json</code>
+        to match this and push to GitHub:
+        <pre>${escapeHtml(snippet)}</pre>`;
+        }
+
+        function escapeHtml(s) {
+            return (s || "").replace(/[&<>"']/g, c => (
+                { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+            ));
+        }
+
+        // Auto-unlock if a token is already saved for this session.
+        (function () {
+            const saved = sessionStorage.getItem("adm");
+            if (saved) { document.getElementById('token').value = saved; unlock(); }
+        })();
+    </script>
+</body>
+
+</html>

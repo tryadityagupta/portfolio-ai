@@ -1107,91 +1107,8 @@
     <h2 class="section-title">AI/ML Projects</h2>
     <p class="section-sub">Not toy examples — real pipelines solving real problems.</p>
 
-    <div class="projects-grid reveal">
-      <div class="project-card">
-        <p class="project-type">Generative AI · RAG · LLMs</p>
-        <p class="project-name">Portfolio AI Chatbot</p>
-        <p class="project-desc">
-          RAG-powered chatbot that answers questions about my portfolio using semantic search.
-          Built with FastAPI, LangChain, FAISS, and OpenAI embeddings to retrieve context from
-          resume PDFs and structured profile data. Designed for production deployment with
-          efficient startup and reliable retrieval.
-        </p>
-        <div class="tech-row">
-          <span class="tech-pill">FastAPI</span>
-          <span class="tech-pill">LangChain</span>
-          <span class="tech-pill">FAISS</span>
-          <span class="tech-pill">OpenAI Embeddings</span>
-          <span class="tech-pill">GPT-4o-mini</span>
-          <span class="tech-pill">Python</span>
-        </div>
-        <a href="https://github.com/tryadityagupta/portfolio-ai" target="_blank" class="project-link">
-          View on GitHub →
-        </a>
-      </div>
-
-      <div class="project-card">
-        <p class="project-type">Deep Learning · NLP · Privacy-First</p>
-        <p class="project-name">Email Auto-Classifier &amp; Labeler</p>
-        <p class="project-desc">
-          A layered FastAPI microservice that connects to Gmail over OAuth 2.0 and auto-labels inbox mail into a
-          fixed six-class taxonomy. Fine-tuned a local DistilBERT classifier via knowledge distillation — using
-          GPT-4o-mini as a teacher to bootstrap the dataset — running fully on-device so email content never leaves
-          the machine. Lifted macro-F1 from 0.67 to 0.95 with inverse-frequency class weights.
-        </p>
-        <div class="tech-row">
-          <span class="tech-pill">FastAPI</span>
-          <span class="tech-pill">PyTorch</span>
-          <span class="tech-pill">Hugging Face</span>
-          <span class="tech-pill">DistilBERT</span>
-          <span class="tech-pill">Gmail API</span>
-          <span class="tech-pill">OAuth 2.0</span>
-        </div>
-        <a href="https://github.com/tryadityagupta/email-classifier" target="_blank" class="project-link">
-          View on GitHub →
-        </a>
-      </div>
-
-      <div class="project-card">
-        <p class="project-type">Generative AI · RAG · LLMs</p>
-        <p class="project-name">RAG Document Chatbot</p>
-        <p class="project-desc">
-          Answers questions over any PDF — with sources. Built a modular pipeline using LangChain, MiniLM embeddings,
-          and a FAISS vector store. Prompt guardrails via TinyLlama. MMR deduplication for retrieval quality.
-          Persistent index, CLI interface, production-minded from day one.
-        </p>
-        <div class="tech-row">
-          <span class="tech-pill">LangChain</span>
-          <span class="tech-pill">FAISS</span>
-          <span class="tech-pill">HuggingFace</span>
-          <span class="tech-pill">TinyLlama</span>
-          <span class="tech-pill">MiniLM</span>
-          <span class="tech-pill">Python</span>
-        </div>
-        <a href="https://github.com/tryadityagupta/rag-document-chatbot" target="_blank" class="project-link">
-          View on GitHub →
-        </a>
-      </div>
-
-      <div class="project-card">
-        <p class="project-type">Machine Learning · NLP · Flask</p>
-        <p class="project-name">Email Spam Classifier</p>
-        <p class="project-desc">
-          End-to-end spam filter: TF-IDF n-grams + Logistic Regression with class balancing. Beats Naive Bayes
-          baseline through thoughtful feature engineering and regex preprocessing. Served in real-time via a
-          Flask API — not just a notebook, an actual product.
-        </p>
-        <div class="tech-row">
-          <span class="tech-pill">Python</span>
-          <span class="tech-pill">scikit-learn</span>
-          <span class="tech-pill">Flask</span>
-          <span class="tech-pill">TF-IDF</span>
-          <span class="tech-pill">NLP</span>
-        </div>
-        <a href="https://github.com/tryadityagupta/email-spam-filter" target="_blank" class="project-link">
-          View on GitHub →
-        </a>
-      </div>
+    <div class="projects-grid reveal" id="projects-grid">
+      <p class="section-sub" id="projects-status">Loading projects from GitHub…</p>
     </div>
   </section>
 
@@ -1388,6 +1305,50 @@
     const ro = new IntersectionObserver(entries => { entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); }); }, { threshold: .1 });
     reveals.forEach(r => ro.observe(r));
 
+    /* PROJECTS — pulled live from the backend, which pulls from GitHub.
+       New repos appear automatically; hidden repos never arrive here so the
+       page literally cannot render them. */
+    const API_BASE =
+      location.hostname === "localhost" || location.hostname === "127.0.0.1"
+        ? "http://localhost:8000"
+        : "https://portfolio-ai-qoer.onrender.com";
+
+    function escapeHtml(s) {
+      return (s || "").replace(/[&<>"']/g, c => (
+        { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+      ));
+    }
+
+    function projectCard(p) {
+      const pills = (p.tech || [])
+        .map(t => `<span class="tech-pill">${escapeHtml(t)}</span>`).join("");
+      const link = p.homepage || p.url || "#";
+      return `
+        <div class="project-card">
+          <p class="project-type">${escapeHtml(p.type)}</p>
+          <p class="project-name">${escapeHtml(p.name)}</p>
+          <p class="project-desc">${escapeHtml(p.description)}</p>
+          <div class="tech-row">${pills}</div>
+          <a href="${escapeHtml(link)}" target="_blank" class="project-link">View on GitHub →</a>
+        </div>`;
+    }
+
+    async function loadProjects() {
+      const grid = document.getElementById('projects-grid');
+      const status = document.getElementById('projects-status');
+      try {
+        const res = await fetch(`${API_BASE}/projects`);
+        const data = await res.json();
+        const list = data.projects || [];
+        if (!list.length) { if (status) status.textContent = "Projects coming soon."; return; }
+        grid.innerHTML = list.map(projectCard).join("");
+      } catch (e) {
+        if (status) status.textContent =
+          "Couldn't load projects right now — please check back shortly.";
+      }
+    }
+    loadProjects();
+
     /* CHAT */
     const toggle = document.getElementById('chat-toggle');
     const win = document.getElementById('chat-window');
@@ -1410,7 +1371,7 @@
       const typing = addMsg('Thinking…', 'typing');
 
       try {
-        const res = await fetch("https://portfolio-ai-qoer.onrender.com/chat", {
+        const res = await fetch(`${API_BASE}/chat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

@@ -1,0 +1,103 @@
+{
+  "_help": "This file is YOUR control panel. 'hidden' = repos to hide everywhere (frontend + chatbot). 'pinned' = repos to show first, in this order. 'overrides' = your polished copy for a repo, used instead of GitHub's plain description. Any repo not mentioned here still shows automatically using its GitHub info. Matching is case-insensitive, so lowercase keys match repos of any case. Keys starting with _ are ignored by the code.",
+  "hidden": [],
+  "pinned": [
+    "portfolio-ai",
+    "email-classifier",
+    "ai-codebase-tutor",
+    "careroute",
+    "rag-document-chatbot",
+    "email-spam-filter",
+    "travel-ai"
+  ],
+  "overrides": {
+    "portfolio-ai": {
+      "display_name": "Portfolio AI Chatbot",
+      "type": "Generative AI · RAG · LLMs",
+      "description": "RAG-powered chatbot that answers questions about my portfolio using semantic search. Built with FastAPI, LangChain, FAISS, and OpenAI embeddings to retrieve context from resume PDFs and structured profile data. Auto-syncs its project knowledge from GitHub, with an admin panel to hide projects from both the site and the chatbot. Streams responses token-by-token; deployed on Render.",
+      "tech": [
+        "FastAPI",
+        "LangChain",
+        "FAISS",
+        "OpenAI Embeddings",
+        "GPT-4o-mini",
+        "Python"
+      ]
+    },
+    "email-classifier": {
+      "display_name": "Email Auto-Classifier & Labeler",
+      "type": "Deep Learning · NLP · Privacy-First",
+      "description": "A layered FastAPI microservice that connects to Gmail over OAuth 2.0 and auto-labels inbox mail into a fixed six-class taxonomy. Fine-tuned a local DistilBERT classifier via knowledge distillation — using GPT-4o-mini as a teacher to bootstrap the dataset — running fully on-device so email content never leaves the machine. Diagnosed a failing minority class from the confusion matrix and applied inverse-frequency class weights, lifting macro-F1 from 0.67 to 0.95.",
+      "tech": [
+        "FastAPI",
+        "PyTorch",
+        "Hugging Face",
+        "DistilBERT",
+        "Gmail API",
+        "OAuth 2.0"
+      ]
+    },
+    "ai-codebase-tutor": {
+      "display_name": "AI Codebase Tutor",
+      "type": "Agentic AI · RAG · Developer Tools",
+      "description": "A virtual senior engineer that ingests any GitHub repo and explains it. Combines hybrid BM25 + FAISS retrieval with cross-encoder reranking and AST-based graph traversal so answers cite the right code, an agentic tool-calling loop for multi-step questions, and a RAGAS-style evaluation harness to measure answer quality. FastAPI backend with streaming responses.",
+      "tech": [
+        "Python",
+        "FastAPI",
+        "FAISS",
+        "BM25",
+        "Cross-Encoder",
+        "LangChain"
+      ]
+    },
+    "careroute": {
+      "display_name": "CareRoute — Provider-Matching Agent",
+      "type": "Agentic AI · Tool-Calling · Healthcare",
+      "description": "An AI agent that reads a patient's symptoms, works out which specialist they need, then calls tools to look up the patient's record and find the nearest matching doctors. Added a step limit and error handling so one failed tool call can't break the whole agent. A single provider-search function pulls from three sources (sample data, OpenStreetMap, or Google Places), normalizes them into one shape, and sorts by distance with specialty matches first.",
+      "tech": [
+        "Python",
+        "GPT-4o-mini",
+        "Tool Calling",
+        "FastAPI",
+        "OpenStreetMap"
+      ]
+    },
+    "rag-document-chatbot": {
+      "display_name": "RAG Document Chatbot",
+      "type": "Generative AI · RAG · LLMs",
+      "description": "Answers questions over any PDF — with sources. Built a modular pipeline using LangChain, MiniLM embeddings, and a FAISS vector store. Prompt guardrails via TinyLlama. MMR deduplication for retrieval quality. Persistent index, CLI interface, production-minded from day one.",
+      "tech": [
+        "LangChain",
+        "FAISS",
+        "HuggingFace",
+        "TinyLlama",
+        "MiniLM",
+        "Python"
+      ]
+    },
+    "email-spam-filter": {
+      "display_name": "Email Spam Classifier",
+      "type": "Machine Learning · NLP · Flask",
+      "description": "End-to-end spam filter: TF-IDF n-grams + Logistic Regression with class balancing. Beats a Naive Bayes baseline through thoughtful feature engineering and regex preprocessing. Served in real time via a Flask API — not just a notebook, an actual product.",
+      "tech": [
+        "Python",
+        "scikit-learn",
+        "Flask",
+        "TF-IDF",
+        "NLP"
+      ]
+    },
+    "travel-ai": {
+      "display_name": "Voice Travel Planner",
+      "type": "Voice AI · LLM · Speech",
+      "description": "A hands-free travel planner you talk to: Whisper transcribes speech, a GPT-4o-mini / GPT-4o layer plans the itinerary, and text-to-speech reads it back. FastAPI backend. (Work in progress.)",
+      "tech": [
+        "Python",
+        "Whisper",
+        "GPT-4o",
+        "FastAPI",
+        "TTS"
+      ]
+    }
+  }
+}
