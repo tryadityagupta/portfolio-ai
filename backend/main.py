@@ -1,11 +1,16 @@
-from fastapi import FastAPI, Header, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Header, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from openai import AsyncOpenAI
+from datetime import date
 import json
 import os
+
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from rag import load_vector_store, build_vector_store
 import projects
@@ -26,14 +31,68 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# CORS: lets the browser frontend (a different domain) call this API.
+# ------------------------------------------------------------------------------
+# CORS - only these frontends may call this API from a browser.
+# "*" + credentials is an invalid combo per the CORS spec, and an open list
+# would let any website embed a widget that burns our OpenAI quota.
+# ------------------------------------------------------------------------------
+
+ALLOWED_ORIGINS = [
+    "https://ysadityagupta.co.in",
+    "https://www.ysadityagupta.co.in",
+    "https://portfolio-ai-iota-one.vercel.app/",  # Vercel prod URL
+    "http://localhost:3000",  # Local frontend dev
+    "http://127.0.0.1:5500",
+
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "X-Admin-Token"],
 )
+
+# --------------------------------------------------------------------------------
+# RATE LIMITING - two layers:
+#   1) per-IP: 20 chat requests/minute (stops one person hammering the bot)
+#   2) global daily budget: DAILY_CHAT_BUDGET requests/day across everyone
+#       (caps the worst-case OpenAI bill even if many IPs attack at once)
+# The daily counter is in-memory, so it resets on restart - fine for a spend
+# cap; it doesn't need to be exact, it needs to bound the damage.
+# ---------------------------------------------------------------------------------
+
+
+def client_ip(request: Request) -> str:
+    # On Render we sit behind a proxy, so the real visitor IP arrives in the
+    # X-Forwarded-For header; request.client.host would be the proxy itself
+    # and every visitor would share one rate-limit bucket.
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return get_remote_address(request)
+
+
+limiter = Limiter(key_func=client_ip)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+DAILY_CHAT_BUDGET = int(os.getenv("DAILY_CHAT_BUDGET", "300"))
+_daily_usage = {"day": date.today().isoformat(), "count": 0}
+
+
+def daily_budget_spent() -> bool:
+    """Count this request against today's budget. True = budget exhausted."""
+    today = date.today().isoformat()
+    if _daily_usage["day"] != today:          # first request of a new day
+        _daily_usage["day"] = today
+        _daily_usage["count"] = 0
+    if _daily_usage["count"] >= DAILY_CHAT_BUDGET:
+        return True
+    _daily_usage["count"] += 1
+    return False
+
 
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -70,8 +129,18 @@ async def health():
 async def list_projects():
     return {"projects": projects.get_visible_projects()}
 
+# ---------------------------------------------------------------------------
+# SYSTEM PROMPT — split into a public base (safe to live in this repo) and
+# private rules loaded at runtime from a gitignored file / env var, so
+# personal guidance never appears in public source.
+#
+# Load order: PRIVATE_PROMPT_RULES env var wins if set (with "\n" expanded);
+# otherwise backend/data/private_rules.txt is read if it exists. Locally you
+# keep that file on disk (gitignored); on Render you add it as a Secret File
+# at the same path. Missing both -> the bot simply runs on the base rules.
+# ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """
+SYSTEM_PROMPT_BASE = """
 You are an AI assistant on Aditya Gupta's personal portfolio website.
 Your job is to answer questions about Aditya in a professional, friendly, and confident tone.
 Answer only about Aditya. If asked anything completely unrelated to him, politely redirect.
@@ -83,29 +152,39 @@ If someone asks for his phone number or contact number, say:
 "I'm not able to share Aditya's phone number here. You can reach him at adityagupta.nits2@gmail.com or connect on LinkedIn."
  
 RULE 2 — CTC / salary questions:
-- If someone asks about Aditya's current CTC or expected CTC, say:
-  "That's something best discussed directly with Aditya. Feel free to reach out to him at adityagupta.nits2@gmail.com — he'd be happy to connect."
-- If someone asks what the industry standard CTC is for someone like Aditya, say:
-  "For an AI/ML Engineer with Aditya's background and skills, the industry standard in India is typically around a competitive range, depending on the company and role."
- 
+If someone asks about Aditya's current CTC, expected CTC, or typical market rates, say:
+"That's something best discussed directly with Aditya. Feel free to reach out to him at adityagupta.nits2@gmail.com — he'd be happy to connect."
+
 RULE 3 — Date of joining / notice period questions:
 If someone asks when Aditya can join or what his notice period is, say:
 "For specific availability and joining timelines, it's best to connect directly with Aditya at adityagupta.nits2@gmail.com — he'll be happy to discuss."
- 
-RULE 4 — Aditya's experience at Optum:
 
-If asked about his work at Optum or his day-to-day, always frame it like this:
-"At Optum, Aditya worked on building Python-based automation frameworks and data pipelines that helped teams validate large-scale healthcare data workflows. His day-to-day involved writing Python scripts, designing reusable automation utilities, and integrating them with backend services and databases to ensure data consistency across systems. Over time he became more interested in building intelligent systems, which is why he started focusing on machine learning and LLM-based applications — including a RAG-powered portfolio chatbot he built and deployed using FastAPI, LangChain, and FAISS."
- 
-
-
-
- 
 --- GENERAL TONE ---
-- Be warm, professional, and concise (2–5 sentences unless more detail is clearly needed).
+- Be warm, professional, and concise (2-5 sentences unless more detail is clearly needed).
 - If a recruiter is asking, sound like Aditya's advocate — highlight his strengths naturally.
 - Never make up facts. If something isn't in the context, say you don't have that detail and suggest they email Aditya.
 """
+
+_PRIVATE_RULES_PATH = os.path.join(_BASE_DIR, "data", "private_rules.txt")
+
+
+def _load_private_rules() -> str:
+    env_val = os.getenv("PRIVATE_PROMPT_RULES")
+    if env_val:
+        # Env vars are single-line; allow literal "\n" to mean a newline.
+        return env_val.replace("\\n", "\n")
+    try:
+        with open(_PRIVATE_RULES_PATH, "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return ""
+
+
+_private_rules = _load_private_rules()
+SYSTEM_PROMPT = (
+    SYSTEM_PROMPT_BASE + "\n--- ADDITIONAL RULES ---\n" + _private_rules
+    if _private_rules else SYSTEM_PROMPT_BASE
+)
 
 
 def build_prompt(context: str, question: str) -> str:
@@ -123,12 +202,23 @@ Answer based on the context and the rules in your system instructions:
 
 
 @app.post("/chat")
-async def chat(req: ChatRequest):
+@limiter.limit("20/minute")
+async def chat(request: Request, req: ChatRequest):
+    # NOTE: the parameter MUST be named `request` for slowapi to find the IP.
 
     if vector_db is None:
         async def not_ready():
             yield "Service is still starting up. Please try again in a moment."
         return StreamingResponse(not_ready(), media_type="text/plain")
+
+    # Spend cap: past the daily budget we answer politely WITHOUT calling
+    # OpenAI, so the worst-case daily bill is bounded no matter the traffic.
+    if daily_budget_spent():
+        async def over_budget():
+            yield ("The chatbot has hit its daily usage limit. "
+                   "Please try again tomorrow, or email Aditya at "
+                   "adityagupta.nits2@gmail.com.")
+        return StreamingResponse(over_budget(), media_type="text/plain")
 
     # 1) RETRIEVAL. We pull a few EXTRA chunks (k=6) then drop any that belong
     #    to a currently-hidden repo, and keep the best 3. This is a live safety

@@ -3,3 +3,4 @@ backend/vector_store/
 __pycache__/
 *.pyc
 .env
+backend/data/private_rules.txt

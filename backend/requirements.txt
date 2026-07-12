@@ -10,3 +10,4 @@ langchain-openai
 pydantic
 openai
 python-dotenv
+slowapi
