@@ -7,6 +7,8 @@ from langchain_core.documents import Document
 import os
 from dotenv import load_dotenv
 import time
+import base64
+import tempfile
 
 import projects  # our single source of truth (GitHub + hide/override rules)
 
@@ -20,23 +22,53 @@ VECTOR_PATH = os.path.join(_BASE_DIR, "vector_store")
 PDF_PATH = os.path.join(_BASE_DIR, "Aditya_Gupta_AI_ML.pdf")
 PROFILE_PATH = os.path.join(_BASE_DIR, "data", "profile.json")
 
+# Render secret file (base64 text)
+RESUME_B64_PATH = "/etc/secrets/resume_b64.txt"
+
+
+def _resolve_resume_pdf():
+    """Return the path to a readable resume PDF, or None.
+
+    Local dev: the real PDF sits next to this file (never committed).
+    Render: Secret Files are plaintext-only — a raw PDF uploaded there
+    gets corrupted — so the resume travels as base64 text and is decoded
+    back into a real PDF here at startup.
+    """
+    if os.path.exists(PDF_PATH):
+        return PDF_PATH
+
+    if os.path.exists(RESUME_B64_PATH):
+        decoded_path = os.path.join(tempfile.gettempdir(), "resume.pdf")
+        with open(RESUME_B64_PATH, "r", encoding="utf-8") as f:
+            pdf_bytes = base64.b64decode(f.read())
+        with open(decoded_path, "wb") as out:
+            out.write(pdf_bytes)
+        return decoded_path
+
+    return None
+
 
 def build_vector_store():
 
     chunks = []
 
-    # 1) Resume PDF (optional). If it's missing we just skip it — the site
-    #    still works from GitHub + profile data. NOTE: the PDF is its own
-    #    source of truth. If you describe a project in the resume, the chatbot
-    #    can mention it from here even if the repo is hidden. Keep the resume
-    #    limited to work you're happy to be public.
-    if os.path.exists(PDF_PATH):
-        pdf_docs = PyPDFLoader(PDF_PATH).load()
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=500, chunk_overlap=50)
-        for c in splitter.split_documents(pdf_docs):
-            c.metadata = {**(c.metadata or {}), "source": "resume"}
-            chunks.append(c)
+    # 1) Resume (optional). Missing OR unreadable → skip it — the site still
+    #    works from GitHub + profile data, and a bad resume file must never
+    #    take the whole service down again. NOTE: the PDF is its own source
+    #    of truth; keep it limited to work you're happy to be public.
+    resume_path = _resolve_resume_pdf()
+    if resume_path:
+        try:
+            pdf_docs = PyPDFLoader(resume_path).load()
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=500, chunk_overlap=50)
+            resume_chunks = splitter.split_documents(pdf_docs)
+            for c in resume_chunks:
+                c.metadata = {**(c.metadata or {}), "source": "resume"}
+                chunks.append(c)
+            print(f"Resume indexed ({len(resume_chunks)} chunks)")
+        except Exception as e:
+            print(f"WARNING: could not parse resume PDF — skipping it. {e}")
 
     # 2) Profile facts (skills, education, etc.) — but NOT the old static
     #    'projects' list. Projects now come live from GitHub in step 3.
