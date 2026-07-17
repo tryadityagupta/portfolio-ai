@@ -43,6 +43,7 @@ ALLOWED_ORIGINS = [
     "https://portfolio-ai-iota-one.vercel.app/",  # Vercel prod URL
     "http://localhost:3000",  # Local frontend dev
     "http://127.0.0.1:5500",
+    "http://localhost:5500",
 
 ]
 
@@ -201,6 +202,39 @@ Answer based on the context and the rules in your system instructions:
 """
 
 
+# ------------------------------------------------------------------------------
+# SSE (Server-Sent Events) helpers.
+#
+# Plain text/plain chunked responses get COALESCED by the proxy layers between
+# Uvicorn and the browser (Render's proxy + Cloudflare buffer/compress generic
+# text responses). text/event-stream is the one content type every CDN treats
+# as "pass each chunk through immediately", so we frame every token as an SSE
+# event instead. The headers matter too:
+#   - no-transform  -> tells intermediaries not to compress/re-encode (gzip
+#                      requires buffering, which is exactly what killed us)
+#   - X-Accel-Buffering: no -> disables buffering in nginx-style proxies
+# ------------------------------------------------------------------------------
+
+SSE_HEADERS = {
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
+
+
+def sse_token(text: str) -> str:
+    # JSON-encode so tokens containing newlines can't break the frame format
+    # (a raw "\n" inside an SSE data line would terminate the event early).
+    return f"data: {json.dumps({'token': text})}\n\n"
+
+
+SSE_DONE = "data: [DONE]\n\n"
+
+
+def sse_response(gen) -> StreamingResponse:
+    return StreamingResponse(gen, media_type="text/event-stream", headers=SSE_HEADERS)
+
+
 @app.post("/chat")
 @limiter.limit("20/minute")
 async def chat(request: Request, req: ChatRequest):
@@ -208,17 +242,19 @@ async def chat(request: Request, req: ChatRequest):
 
     if vector_db is None:
         async def not_ready():
-            yield "Service is still starting up. Please try again in a moment."
-        return StreamingResponse(not_ready(), media_type="text/plain")
+            yield sse_token("Service is still starting up. Please try again in a moment.")
+            yield SSE_DONE
+        return sse_response(not_ready())
 
     # Spend cap: past the daily budget we answer politely WITHOUT calling
     # OpenAI, so the worst-case daily bill is bounded no matter the traffic.
     if daily_budget_spent():
         async def over_budget():
-            yield ("The chatbot has hit its daily usage limit. "
-                   "Please try again tomorrow, or email Aditya at "
-                   "adityagupta.nits2@gmail.com.")
-        return StreamingResponse(over_budget(), media_type="text/plain")
+            yield sse_token("The chatbot has hit its daily usage limit. "
+                            "Please try again tomorrow, or email Aditya at "
+                            "adityagupta.nits2@gmail.com.")
+            yield SSE_DONE
+        return sse_response(over_budget())
 
     # 1) RETRIEVAL. We pull a few EXTRA chunks (k=6) then drop any that belong
     #    to a currently-hidden repo, and keep the best 3. This is a live safety
@@ -238,6 +274,11 @@ async def chat(request: Request, req: ChatRequest):
 
     # 3) GENERATION — stream tokens back to the browser as they're produced.
     async def token_stream():
+        # SSE comment frame, sent before the first OpenAI token exists. It's
+        # invisible to the client but pushes bytes down the wire immediately,
+        # so any proxy that waits for "first body bytes" opens the pipe now
+        # instead of when the model starts talking.
+        yield ": ok\n\n"
         try:
             stream = await client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -251,11 +292,15 @@ async def chat(request: Request, req: ChatRequest):
             async for chunk in stream:
                 delta = chunk.choices[0].delta.content
                 if delta:
-                    yield delta
+                    yield sse_token(delta)
         except Exception:
-            yield "Sorry, I couldn't process that right now. Please try again later."
+            yield sse_token("Sorry, I couldn't process that right now. "
+                            "Please try again later.")
+        # Explicit end-of-stream sentinel (same convention OpenAI's own API
+        # uses) so the client can distinguish "finished" from "connection died".
+        yield SSE_DONE
 
-    return StreamingResponse(token_stream(), media_type="text/plain")
+    return sse_response(token_stream())
 
 
 # ---------------------------------------------------------------------------

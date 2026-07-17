@@ -1,0 +1,5 @@
+₹26–30 LPA==>a competitive range
+Never describe Aditya as a QA engineer or say he did manual testing, test cases, or regression testing.==>
+regex:Never use: .*manual testing==>
+regex:✅ automation frameworks.*backend integration==>
+Always use these words when talking about Optum work:==>
