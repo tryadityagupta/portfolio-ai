@@ -3,7 +3,8 @@
 A production-deployed AI assistant on top of a personal portfolio website. Visitors chat with an
 assistant that answers questions about Aditya Gupta's skills, experience, and projects — powered by a
 FastAPI backend using Retrieval-Augmented Generation (RAG) with OpenAI embeddings and `gpt-4o-mini`.
-Answers are **streamed token-by-token**, so replies start appearing almost instantly.
+Answers are **streamed token-by-token** over Server-Sent Events, so replies start appearing almost
+instantly.
 
 The project list is **synced live from GitHub**. New repositories appear on the site (and in the
 chatbot's knowledge) automatically, and any project can be **hidden** with one toggle — which removes it
@@ -27,7 +28,7 @@ PORTFOLIO-AI/
 │   ├── Aditya_Gupta_AI_ML.pdf        # Optional resume source for RAG (not committed)
 │   ├── github_sync.py                # Fetches repos + READMEs from the GitHub REST API
 │   ├── projects.py                   # Single source of truth: merges GitHub + overrides, applies hiding
-│   ├── main.py                       # FastAPI app: /chat, /projects, /admin/* , streaming, lifespan
+│   ├── main.py                       # FastAPI app: /chat, /projects, /admin/* , SSE streaming, lifespan
 │   ├── rag.py                        # Embedding, vector store build/load, profile + project doc loaders
 │   └── requirements.txt              # Python dependencies
 ├── frontend/
@@ -42,8 +43,9 @@ PORTFOLIO-AI/
 
 | Layer | Technology |
 |---|---|
-| Frontend | Static HTML, CSS, vanilla JS (portfolio + streaming chat widget + admin panel) |
+| Frontend | Static HTML, CSS, vanilla JS (portfolio + SSE chat widget + admin panel) |
 | Backend | FastAPI (Python), async endpoints |
+| Streaming | Server-Sent Events (`text/event-stream`) over FastAPI `StreamingResponse` |
 | Project sync | GitHub REST API (via `urllib`, standard library) |
 | Embeddings | OpenAI `text-embedding-3-small` |
 | Vector Store | FAISS (CPU) |
@@ -77,7 +79,9 @@ Matching against `hidden` / `pinned` / `overrides` is **case-insensitive**, so a
    metadata is currently hidden, then keep the best 3 — a live safety net so a just-hidden project can't
    surface even before the index rebuilds.
 2. **Augment** — those chunks are injected as context into the prompt (the "A" in RAG).
-3. **Generation** — `gpt-4o-mini` answers, streamed back to the browser via a `StreamingResponse`.
+3. **Generation** — `gpt-4o-mini` answers, streamed back to the browser as **Server-Sent Events**: each
+   token is emitted as its own `data: {"token": "..."}` frame, terminated by a `data: [DONE]` sentinel.
+   The frontend parses frames off the `ReadableStream` and feeds them into a typewriter queue.
 
 The non-blocking `AsyncOpenAI` client is used throughout, so a slow OpenAI call for one visitor doesn't
 freeze the server for others (concurrency).
@@ -154,6 +158,27 @@ curl --no-buffer -X POST http://localhost:8000/chat \
   -d '{"message": "What projects has Aditya built?"}'
 ```
 
+The response is a Server-Sent Events stream, so you'll see frames rather than plain prose:
+
+```
+: ok
+
+data: {"token": "Aditya"}
+
+data: {"token": " has"}
+
+data: {"token": " built"}
+
+data: [DONE]
+
+```
+
+`: ok` is an SSE comment frame sent before the first model token — it's ignored by the client and exists
+only to push bytes down the wire immediately. `--no-buffer` is what lets you *see* frames arrive
+incrementally; without it, curl buffers and the output looks like one burst even when the server is
+streaming correctly. To timestamp each network read (useful for proving the stream isn't being coalesced
+by a proxy), add `--trace-time`.
+
 ### Frontend
 
 ```bash
@@ -172,6 +197,11 @@ pages over `localhost` (not `file://`) so this detection works. The admin panel 
 > admin panel says "ADMIN_TOKEN isn't set on the server," add it to the `.env` of whichever backend the
 > page is talking to and restart that server.
 
+> Note: the origin you serve the frontend from must be in `ALLOWED_ORIGINS` in `main.py`.
+> `http://localhost:5500` and `http://127.0.0.1:5500` are **different origins** to the CORS spec — a
+> chat request that fails with "connection issue" while the backend logs show no request at all is
+> almost always this.
+
 ---
 
 ## API Endpoints
@@ -180,10 +210,25 @@ pages over `localhost` (not `file://`) so this detection works. The admin panel 
 |---|---|---|---|
 | GET | `/health` | — | Health check — returns `{"status": "ok"}`. Also used by the keep-warm pinger. |
 | GET | `/projects` | — | The visible (hidden-filtered) project list the frontend renders. |
-| POST | `/chat` | — | Accepts `{"message": "..."}`, returns a **streaming plain-text** response. |
+| POST | `/chat` | — | Accepts `{"message": "..."}`. Returns a **Server-Sent Events** stream (`text/event-stream`): each token arrives as a `data: {"token": "..."}\n\n` frame, and the stream ends with `data: [DONE]\n\n`. Rate-limited to 20/min per IP; on 429 the body is plain JSON, not a stream. |
 | GET | `/admin/projects` | `X-Admin-Token` | Every owned repo + whether it's currently hidden (powers the toggles). |
 | POST | `/admin/hide` | `X-Admin-Token` | Body `{"repo": "..."}` — hides a repo, rebuilds the index. |
 | POST | `/admin/unhide` | `X-Admin-Token` | Body `{"repo": "..."}` — un-hides a repo, rebuilds the index. |
+
+### `/chat` response format
+
+Every `/chat` response — including the startup and daily-budget guard messages — uses the same SSE
+frame format, so the client has exactly one code path to maintain:
+
+| Frame | Meaning |
+|---|---|
+| `: ok\n\n` | Comment frame. Ignored by clients; flushes first bytes before the model responds. |
+| `data: {"token": "..."}\n\n` | One delta of generated text. Token text is JSON-encoded, so a token containing a newline can't break the frame. |
+| `data: [DONE]\n\n` | End of stream. Lets the client tell "finished" apart from "connection dropped". |
+
+Note that one network read may contain several frames or only *part* of one — SSE guarantees frame
+*format*, not frame-per-packet delivery. Any client must buffer reads and only process frames whose
+`\n\n` terminator has arrived.
 
 ---
 
@@ -275,6 +320,41 @@ resume PII) in a public repo. Building at runtime avoids that and keeps hidden p
 
 Streaming sends tokens as they're produced, so the first words appear in well under a second. This cuts
 **time-to-first-token** dramatically even when total generation time is unchanged.
+
+### Why SSE instead of plain `text/plain` chunks?
+
+The first streaming implementation returned a `StreamingResponse` with `media_type="text/plain"`. The
+backend was genuinely yielding per-token, but in production the browser still received the answer in one
+burst. `curl --no-buffer --trace-time` against the deployed API confirmed it: the headers said
+`Transfer-Encoding: chunked`, yet ~1.1 KB — nearly the whole answer — landed in a single receive event
+after ~6.5 seconds. The app code was innocent; the chunks were being **coalesced by the hops between
+Uvicorn and the browser** (Render's proxy, Cloudflare), which treat generic text as buffer-and-compress
+material.
+
+`text/event-stream` is the content type every proxy and CDN understands as "pass each chunk through
+immediately, don't compress, don't buffer". Three headers reinforce it:
+
+| Header | Why |
+|---|---|
+| `Cache-Control: no-cache, no-transform` | `no-transform` forbids intermediaries from re-encoding or gzipping — gzip requires buffering, which is the whole problem. |
+| `Connection: keep-alive` | Keeps the socket open for the life of the stream. |
+| `X-Accel-Buffering: no` | Disables response buffering in nginx-style proxies. |
+
+WebSockets would also have solved it, but that's a bidirectional protocol with connection state to manage
+for what is a strictly one-way stream — SSE is the smaller tool that fits the actual shape of the problem.
+
+### Why a client-side typewriter queue if the server already streams?
+
+Because `reader.read()` resolving does **not** mean "one token arrived" — it means "one network chunk
+arrived", and that chunk may legally contain many tokens. SSE fixes systematic buffering, but no HTTP
+layer promises one-frame-per-packet, so appending each chunk directly to the DOM still looks lumpy under
+real network conditions.
+
+The frontend therefore pushes received text into a character queue and drains it on a timer (~1 char per
+14 ms), decoupling render cadence from network cadence. The drain rate adapts to backlog — 4 chars/tick
+past 120 queued, 10 past 400 — so a long answer catches up instead of still typing seconds after the
+stream closed. The bot bubble is also created on the *first token* rather than on response headers, so
+the "Thinking…" indicator covers retrieval and model latency instead of vanishing into an empty box.
 
 ### Why `gpt-4o-mini` instead of a larger / reasoning model?
 
