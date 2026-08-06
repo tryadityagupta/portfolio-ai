@@ -11,3 +11,4 @@ pydantic
 openai
 python-dotenv
 slowapi
+rank_bm25

@@ -7,6 +7,9 @@ from openai import AsyncOpenAI
 from datetime import date
 import json
 import os
+import re
+
+from rank_bm25 import BM25Okapi
 
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -26,6 +29,7 @@ async def lifespan(app: FastAPI):
     # Render doesn't mark the deploy as failed during a cold start.
     global vector_db
     vector_db = load_vector_store()
+    build_bm25()   # keyword index over the same chunks FAISS just loaded
     yield
 
 
@@ -240,16 +244,83 @@ def sse_response(gen) -> StreamingResponse:
 # Both the live endpoint and evals/run_ragas_eval.py call this function, so
 # the eval scores describe the real production pipeline — not a copy of it
 # that could silently drift out of sync.
+#
+# HYBRID = dense (FAISS) + keyword (BM25), merged with Reciprocal Rank
+# Fusion. Dense-only retrieval kept missing keyword-style questions like
+# "has he done fine-tuning?": the answer sat inside one big project doc
+# whose embedding averaged over its whole README, so it never cracked the
+# top-3. BM25 scores exact terms, so chunks that literally say "fine-tuned"
+# now surface; dense search still catches paraphrases. Same pattern as the
+# AI-Codebase-Tutor retriever.
 # ---------------------------------------------------------------------------
-async def retrieve_docs(message: str, k: int = 6, keep: int = 3):
-    """Pull k candidate chunks, drop any from currently-hidden repos, keep the
-    best `keep`. Compared case-insensitively because repo names on GitHub can
-    be any case. Requires `vector_db` to be loaded (lifespan does this for the
-    server; the eval script sets it explicitly)."""
+
+_SUFFIXES = ("ing", "ed", "es", "s")
+
+
+def _tokenize(text: str) -> list[str]:
+    """Lowercased word tokens; each token is ALSO emitted with a crude suffix
+    strip, so morphological cousins meet somewhere: 'fine-tuning' becomes
+    [fine, tuning, tun] and a doc saying 'fine-tuned' becomes
+    [fine, tuned, tun] — they overlap on 'tun'. Applied identically to
+    documents and queries, so the expansion is symmetric."""
+    tokens = []
+    for w in re.findall(r"[a-z0-9]+", text.lower()):
+        tokens.append(w)
+        for suf in _SUFFIXES:
+            if len(w) > len(suf) + 2 and w.endswith(suf):
+                tokens.append(w[: -len(suf)])
+                break
+    return tokens
+
+
+_bm25 = None
+_bm25_docs: list = []
+
+
+def build_bm25():
+    """(Re)build the keyword index over the SAME chunks FAISS holds, so both
+    retrievers always describe the same corpus (incl. after hide/unhide)."""
+    global _bm25, _bm25_docs
+    _bm25_docs = list(vector_db.docstore._dict.values())
+    _bm25 = BM25Okapi([_tokenize(d.page_content) for d in _bm25_docs])
+
+
+def _bm25_search(query: str, k: int):
+    if _bm25 is None:
+        if vector_db is None:
+            return []
+        build_bm25()   # lazy fallback: covers the eval script, which sets
+        # vector_db directly and never runs the server lifespan
+    scores = _bm25.get_scores(_tokenize(query))
+    order = sorted(range(len(scores)), key=lambda i: -scores[i])[:k]
+    return [_bm25_docs[i] for i in order if scores[i] > 0]
+
+
+def _rrf_merge(ranked_lists, c: int = 60):
+    """Reciprocal Rank Fusion: fuse by RANK, not score, so FAISS distances
+    and BM25 scores never need to share a scale. A doc found by both
+    retrievers gets both contributions and floats to the top."""
+    fused: dict[str, list] = {}
+    for lst in ranked_lists:
+        for rank, doc in enumerate(lst):
+            entry = fused.setdefault(doc.page_content, [0.0, doc])
+            entry[0] += 1.0 / (c + rank + 1)
+    return [doc for _, doc in sorted(fused.values(), key=lambda e: -e[0])]
+
+
+async def retrieve_docs(message: str, k: int = 8, keep: int = 5):
+    """Pull k candidates from EACH retriever, fuse, drop currently-hidden
+    repos, keep the best `keep`. Repo names compared case-insensitively.
+    Chunks are ~700 chars now (see rag.load_project_documents), so 5 chunks
+    cost FEWER tokens than the old 3 whole-README docs. Requires `vector_db`
+    to be loaded (lifespan does this for the server; the eval script sets it
+    explicitly)."""
     hidden = projects.get_hidden_set()  # lowercased
-    docs = await vector_db.asimilarity_search(message, k=k)
+    dense = await vector_db.asimilarity_search(message, k=k)
+    sparse = _bm25_search(message, k=k)
+    merged = _rrf_merge([dense, sparse])
     return [
-        d for d in docs
+        d for d in merged
         if (d.metadata.get("repo") or "").lower() not in hidden
     ][:keep]
 
@@ -345,6 +416,7 @@ def _rebuild_index():
     projects.invalidate_cache()
     build_vector_store()
     vector_db = load_vector_store()
+    build_bm25()   # keyword index must track the new chunk set too
 
 
 @app.get("/admin/projects")
@@ -361,6 +433,29 @@ async def admin_list(x_admin_token: str | None = Header(default=None)):
             for r in repos
         ],
         "hidden": sorted(hidden),
+    }
+
+
+@app.get("/admin/debug-retrieval")
+async def admin_debug_retrieval(q: str,
+                                x_admin_token: str | None = Header(default=None)):
+    """First stop whenever an answer looks wrong: shows the exact chunks the
+    model would receive for `q`, in fused order. If the right chunk isn't in
+    this list, it's a retrieval problem; if it IS here but the answer is
+    still bad, it's a prompting problem. Token-gated (costs one embedding
+    call per hit). Try:
+      curl -H "X-Admin-Token: $TOKEN" "$API/admin/debug-retrieval?q=fine+tuning"
+    """
+    _check_admin(x_admin_token)
+    docs = await retrieve_docs(q)
+    return {
+        "query": q,
+        "kept": [
+            {"source": d.metadata.get("source"),
+             "repo": d.metadata.get("repo"),
+             "preview": d.page_content[:300]}
+            for d in docs
+        ],
     }
 
 
