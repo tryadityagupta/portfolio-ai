@@ -730,8 +730,12 @@
       bottom: 6rem;
       right: 2rem;
       z-index: 500;
-      width: 360px;
+      /* Default size only — the user can drag the top-left grip or hit the
+         expand button; JS then writes inline width/height over these. */
+      width: 380px;
+      height: min(560px, calc(100vh - 8rem));
       max-width: calc(100vw - 2rem);
+      max-height: calc(100vh - 7rem);
       background: var(--bg2);
       border: 1px solid var(--border);
       border-radius: 12px;
@@ -743,7 +747,58 @@
       opacity: 0;
       transition: transform .25s, opacity .25s;
       pointer-events: none;
-      max-height: 520px;
+    }
+
+    /* Drag grip in the top-left corner. The window is anchored bottom-right,
+       so growing width/height naturally expands it left and up. */
+    #chat-resize {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 22px;
+      height: 22px;
+      cursor: nwse-resize;
+      touch-action: none;
+      z-index: 2;
+      opacity: 0;
+      transition: opacity .2s;
+    }
+
+    #chat-resize::before {
+      content: '';
+      position: absolute;
+      top: 6px;
+      left: 6px;
+      width: 9px;
+      height: 9px;
+      border-top: 2px solid var(--muted);
+      border-left: 2px solid var(--muted);
+      border-top-left-radius: 3px;
+    }
+
+    #chat-window:hover #chat-resize,
+    #chat-resize:focus-visible {
+      opacity: .85;
+    }
+
+    #chat-expand {
+      margin-left: auto;
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      border-radius: 6px;
+      width: 28px;
+      height: 28px;
+      cursor: pointer;
+      font-size: .9rem;
+      line-height: 1;
+      flex-shrink: 0;
+      transition: color .2s, border-color .2s;
+    }
+
+    #chat-expand:hover {
+      color: var(--text);
+      border-color: rgba(0, 212, 255, .4);
     }
 
     #chat-window.open {
@@ -819,8 +874,9 @@
       display: flex;
       flex-direction: column;
       gap: .8rem;
-      min-height: 200px;
-      max-height: 320px;
+      /* min-height: 0 lets a flex child actually shrink and scroll; the old
+         fixed max-height is gone so messages fill any window size. */
+      min-height: 0;
     }
 
     #chat-messages::-webkit-scrollbar {
@@ -838,6 +894,20 @@
       line-height: 1.6;
       padding: .65rem .9rem;
       border-radius: 8px;
+      /* Long unbroken tokens (URLs) wrap instead of escaping the bubble. */
+      overflow-wrap: anywhere;
+    }
+
+    .msg a {
+      color: var(--accent);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      word-break: break-all;
+    }
+
+    .msg strong {
+      color: #fff;
+      font-weight: 600;
     }
 
     .msg-bot {
@@ -1230,12 +1300,14 @@
   <button id="chat-toggle" title="Chat with Aditya's AI">🤖</button>
 
   <div id="chat-window">
+    <div id="chat-resize" title="Drag to resize" aria-hidden="true"></div>
     <div class="chat-header">
       <div class="chat-avatar">AG</div>
       <div>
         <div class="chat-name">Aditya's AI</div>
         <div class="chat-status">Online — ask me anything</div>
       </div>
+      <button id="chat-expand" title="Expand" aria-label="Expand chat window">⤢</button>
     </div>
     <div id="chat-messages">
       <div class="msg msg-bot">
@@ -1358,6 +1430,89 @@
 
     toggle.addEventListener('click', () => { win.classList.toggle('open'); if (win.classList.contains('open')) input.focus(); });
 
+    /* --- RESIZABLE WINDOW ------------------------------------------------
+       Two ways to change size, both user-driven:
+         1) drag the grip in the top-left corner (window is anchored
+            bottom-right, so it grows left/up), or
+         2) the ⤢ button toggles between current size and near-fullscreen.
+       The chosen size is clamped to the viewport and remembered in
+       localStorage so it survives page reloads. */
+    const grip = document.getElementById('chat-resize');
+    const expandBtn = document.getElementById('chat-expand');
+
+    const MIN_W = 300, MIN_H = 380;
+    const maxW = () => window.innerWidth - 32;    // keep a small margin
+    const maxH = () => window.innerHeight - 128;  // room for the 6rem bottom offset
+    const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+
+    function setChatSize(w, h, save = true) {
+      w = clamp(w, MIN_W, maxW());
+      h = clamp(h, MIN_H, maxH());
+      win.style.width = w + 'px';
+      win.style.height = h + 'px';
+      if (save) { try { localStorage.setItem('chatSize', w + 'x' + h); } catch (_) { } }
+    }
+
+    // Restore last chosen size (clamped, in case it was saved on a bigger screen).
+    try {
+      const saved = (localStorage.getItem('chatSize') || '').split('x');
+      if (saved.length === 2 && +saved[0] && +saved[1]) setChatSize(+saved[0], +saved[1], false);
+    } catch (_) { }
+
+    grip.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      grip.setPointerCapture(e.pointerId);
+      const startX = e.clientX, startY = e.clientY;
+      const startW = win.offsetWidth, startH = win.offsetHeight;
+      // Dragging the TOP-LEFT corner: moving the pointer left/up = bigger.
+      const move = ev => setChatSize(startW + (startX - ev.clientX), startH + (startY - ev.clientY));
+      const up = () => {
+        grip.removeEventListener('pointermove', move);
+        grip.removeEventListener('pointerup', up);
+      };
+      grip.addEventListener('pointermove', move);
+      grip.addEventListener('pointerup', up);
+    });
+
+    let expanded = false, sizeBeforeExpand = null;
+    expandBtn.addEventListener('click', () => {
+      if (!expanded) {
+        sizeBeforeExpand = [win.offsetWidth, win.offsetHeight];
+        setChatSize(Math.min(760, maxW()), maxH(), false);
+        expandBtn.textContent = '⤡';
+        expandBtn.title = 'Shrink';
+      } else {
+        if (sizeBeforeExpand) setChatSize(sizeBeforeExpand[0], sizeBeforeExpand[1]);
+        expandBtn.textContent = '⤢';
+        expandBtn.title = 'Expand';
+      }
+      expanded = !expanded;
+    });
+
+    /* --- SAFE MARKDOWN-LITE ----------------------------------------------
+       The model replies in light markdown ("[GitHub](https://...)", **bold**).
+       Rendering it as plain text showed the raw syntax AND let long URLs
+       overflow the bubble. Everything is HTML-escaped FIRST, then the only
+       markup injected is what these three rules build themselves — so
+       model output can never smuggle live HTML into the page. */
+    function escapeHTML(s) {
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function renderMarkdownLite(raw) {
+      let h = escapeHTML(raw);
+      // [label](https://url) → clickable link
+      h = h.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+        '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+      // bare URLs (guard char stops it re-matching inside href="...")
+      h = h.replace(/(^|[^"=\w>])(https?:\/\/[^\s<)]+)/g,
+        '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>');
+      // **bold**
+      h = h.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+      return h.replace(/\n/g, '<br>');
+    }
+
     function addMsg(text, type) {
       const d = document.createElement('div');
       d.className = 'msg msg-' + type; d.textContent = text;
@@ -1397,6 +1552,9 @@
         let bot = null;        // bubble is created on the FIRST token, so the
         // "Thinking…" indicator covers model latency
         let buf = '';
+        let raw = '';          // full reply so far — the bubble is RE-RENDERED
+        // from this every tick (not appended to), so markdown that only
+        // completes mid-stream (a link's closing paren) upgrades in place
         let queue = [];        // characters waiting to be typed out
         let draining = false;
         let streamDone = false;
@@ -1412,7 +1570,8 @@
           (function tick() {
             if (queue.length === 0) { draining = false; return; }
             const n = queue.length > 400 ? 10 : queue.length > 120 ? 4 : 1;
-            bot.textContent += queue.splice(0, n).join('');
+            raw += queue.splice(0, n).join('');
+            bot.innerHTML = renderMarkdownLite(raw);
             msgs.scrollTop = msgs.scrollHeight;
             setTimeout(tick, 14);
           })();
