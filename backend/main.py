@@ -235,6 +235,25 @@ def sse_response(gen) -> StreamingResponse:
     return StreamingResponse(gen, media_type="text/event-stream", headers=SSE_HEADERS)
 
 
+# ---------------------------------------------------------------------------
+# RETRIEVAL, factored out of /chat so it has exactly ONE implementation.
+# Both the live endpoint and evals/run_ragas_eval.py call this function, so
+# the eval scores describe the real production pipeline — not a copy of it
+# that could silently drift out of sync.
+# ---------------------------------------------------------------------------
+async def retrieve_docs(message: str, k: int = 6, keep: int = 3):
+    """Pull k candidate chunks, drop any from currently-hidden repos, keep the
+    best `keep`. Compared case-insensitively because repo names on GitHub can
+    be any case. Requires `vector_db` to be loaded (lifespan does this for the
+    server; the eval script sets it explicitly)."""
+    hidden = projects.get_hidden_set()  # lowercased
+    docs = await vector_db.asimilarity_search(message, k=k)
+    return [
+        d for d in docs
+        if (d.metadata.get("repo") or "").lower() not in hidden
+    ][:keep]
+
+
 @app.post("/chat")
 @limiter.limit("20/minute")
 async def chat(request: Request, req: ChatRequest):
@@ -259,14 +278,9 @@ async def chat(request: Request, req: ChatRequest):
     # 1) RETRIEVAL. We pull a few EXTRA chunks (k=6) then drop any that belong
     #    to a currently-hidden repo, and keep the best 3. This is a live safety
     #    net: even if the index was built before you hid something, the hidden
-    #    project's text can't reach the model on this request. Compared
-    #    case-insensitively because repo names on GitHub can be any case.
-    hidden = projects.get_hidden_set()  # lowercased
-    docs = await vector_db.asimilarity_search(req.message, k=6)
-    visible_docs = [
-        d for d in docs
-        if (d.metadata.get("repo") or "").lower() not in hidden
-    ][:3]
+    #    project's text can't reach the model on this request. The logic lives
+    #    in retrieve_docs() above so the RAGAS eval exercises this same path.
+    visible_docs = await retrieve_docs(req.message)
     context = "\n".join(d.page_content for d in visible_docs)
 
     # 2) AUGMENT — stuff the retrieved context into the prompt (the "A" in RAG).
