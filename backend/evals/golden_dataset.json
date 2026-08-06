@@ -30,5 +30,9 @@
     {
         "question": "Tell me about the RAG Document Chatbot project.",
         "reference": "The RAG Document Chatbot is a modular document question-answering pipeline built with LangChain, MiniLM embeddings, and a FAISS vector store, using MMR retrieval and TinyLlama guardrails."
+    },
+    {
+        "question": "Has Aditya done any fine-tuning work?",
+        "reference": "Yes — in his Email Auto-Classifier project he fine-tuned a local DistilBERT model using knowledge distillation, with GPT-4o-mini acting as a teacher to label the training data. Using inverse-frequency class weights he raised the classifier macro-F1 from 0.67 to 0.95, and the fine-tuned model runs locally so email content stays private."
     }
 ]
