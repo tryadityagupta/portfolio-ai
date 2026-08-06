@@ -1,0 +1,24 @@
+# Evaluation-only dependencies. Install these in a SEPARATE virtualenv from
+# the one that serves the app:
+#
+#   python -m venv .venv-eval
+#   .venv-eval/bin/pip install -r backend/requirements.txt -r evals/requirements-eval.txt
+#   .venv-eval/bin/python evals/run_ragas_eval.py
+#
+# WHY the pins: ragas (as of 0.4.3) still imports modules that were removed in
+# the langchain 1.x line (`langchain_community.chat_models.vertexai`), so
+# `import ragas` crashes outright on a fresh unpinned install. ragas 0.3.9 +
+# the langchain 0.3.x series is a known-good combination, and the backend code
+# runs happily on 0.3.x too. Installing BOTH requirements files in ONE pip
+# command (as above) lets the resolver honor these pins for the app's unpinned
+# dependencies as well.
+#
+# None of this ships to Render — eval deps stay out of the production image.
+
+ragas==0.3.9
+langchain>=0.3,<1.0
+langchain-community>=0.3,<0.4
+langchain-core>=0.3,<0.4
+langchain-openai>=0.2,<0.4
+langchain-text-splitters>=0.3,<0.4
+pandas

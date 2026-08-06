@@ -1,0 +1,34 @@
+[
+    {
+        "question": "Where did Aditya study and how did he perform academically?",
+        "reference": "Aditya earned a B.Tech in Computer Science & Engineering from NIT Silchar between July 2018 and May 2022, graduating with a CGPA of 8.54 out of 10."
+    },
+    {
+        "question": "What kind of work did Aditya do at Optum?",
+        "reference": "At Optum Global Solutions (July 2022 to April 2026), Aditya built Python-based automation frameworks and reusable API libraries integrated into Jenkins/Octopus CI/CD pipelines for large-scale healthcare data validation, focusing on backend Python tooling, API integration, and data workflows."
+    },
+    {
+        "question": "What is the Portfolio AI Chatbot project and what technologies does it use?",
+        "reference": "The Portfolio AI Chatbot is a production-deployed RAG assistant built with FastAPI, LangChain, and FAISS, using OpenAI's text-embedding-3-small for embeddings and GPT-4o-mini for generation. It is deployed on Render."
+    },
+    {
+        "question": "How did Aditya improve his email classifier's performance?",
+        "reference": "Aditya raised the email classifier's macro-F1 score from 0.67 to 0.95 by using inverse-frequency class weighting. The classifier is a locally fine-tuned DistilBERT model created via knowledge distillation from GPT-4o-mini, running on-device for privacy."
+    },
+    {
+        "question": "What performance optimization is Aditya known for at work?",
+        "reference": "Aditya cut the worst-case runtime of a critical script by 98 percent, from 225 seconds down to 5 seconds, by replacing a linear search with binary search."
+    },
+    {
+        "question": "What are Aditya's main AI and ML skills?",
+        "reference": "Aditya's skills include Python, FastAPI, LangChain, FAISS, the OpenAI API, RAG, prompt engineering, agentic AI, PyTorch, Hugging Face Transformers, DistilBERT, fine-tuning, knowledge distillation, scikit-learn, pandas, and SQL."
+    },
+    {
+        "question": "Is Aditya currently open to new opportunities?",
+        "reference": "Yes, Aditya is open to AI/ML Engineer roles and freelance AI projects. He is based in Bengaluru, India."
+    },
+    {
+        "question": "Tell me about the RAG Document Chatbot project.",
+        "reference": "The RAG Document Chatbot is a modular document question-answering pipeline built with LangChain, MiniLM embeddings, and a FAISS vector store, using MMR retrieval and TinyLlama guardrails."
+    }
+]

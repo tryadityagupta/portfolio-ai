@@ -1,0 +1,11 @@
+{
+  "timestamp": "20260717-093157",
+  "judge_model": "gpt-4o-mini",
+  "n_questions": 8,
+  "means": {
+    "faithfulness": 0.8521,
+    "answer_relevancy": 0.9065,
+    "llm_context_precision_without_reference": 0.7604,
+    "context_recall": 0.9375
+  }
+}

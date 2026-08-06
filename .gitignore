@@ -3,4 +3,6 @@ backend/vector_store/
 __pycache__/
 *.pyc
 .env
-backend/data/private_rules.txt
+backend/data/private_rules.txtvenv/
+.venv-eval/
+backend/evals/results/*.csv
