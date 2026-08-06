@@ -6,3 +6,4 @@ __pycache__/
 backend/data/private_rules.txtvenv/
 .venv-eval/
 backend/evals/results/*.csv
+backend/data/private_rules.txt
