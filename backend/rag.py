@@ -144,30 +144,47 @@ def load_profile_documents():
 
 def load_project_documents():
     """
-    Turn each VISIBLE GitHub project into a document the chatbot can retrieve.
+    Turn each VISIBLE GitHub project into documents the chatbot can retrieve.
+
+    Two kinds of docs per project:
+      1) one small OVERVIEW doc (name, category, tech, description, links) —
+         serves "what has he built?" style questions, and
+      2) the README split into ~700-char CHUNKS, each prefixed with a
+         [Project: name] tag so a chunk from deep inside a README still
+         self-identifies which project it came from.
+
+    Why chunk at all: one embedding per whole README is an AVERAGE of
+    everything in it (setup steps, endpoints, architecture tables...), so a
+    pointed question like "has he done fine-tuning?" barely moves the needle
+    against it, and the doc loses to short ML-flavoured profile snippets.
+    Small chunks give the fine-tuning paragraph its own sharp embedding.
+
     Every chunk is tagged with metadata['repo'] so it can also be filtered at
     query time (see main.py) — a second safety net on top of not embedding
     hidden repos in the first place.
     """
     docs = []
+    splitter = RecursiveCharacterTextSplitter(chunk_size=700, chunk_overlap=80)
+
     for p in projects.get_visible_projects(force_refresh=True, include_readme=True):
-        parts = [
+        meta = {"source": "project", "repo": p["repo"]}
+
+        overview = "\n".join(x for x in [
             f"Project: {p['name']}",
             f"Category: {p['type']}",
             f"Tech: {', '.join(p['tech'])}" if p.get("tech") else "",
             f"Description: {p['description']}" if p.get("description") else "",
             f"GitHub: {p['url']}" if p.get("url") else "",
             f"Live: {p['homepage']}" if p.get("homepage") else "",
-        ]
+        ] if x)
+        docs.append(Document(page_content=overview, metadata=meta))
+
         readme = p.get("readme") or ""
         if readme:
-            parts.append(f"README excerpt:\n{readme}")
-
-        text = "\n".join(x for x in parts if x)
-        docs.append(Document(
-            page_content=text,
-            metadata={"source": "project", "repo": p["repo"]},
-        ))
+            tag = f"[Project: {p['name']}]"
+            for piece in splitter.split_text(readme):
+                docs.append(Document(page_content=f"{tag}\n{piece}",
+                                     metadata=meta))
     return docs
 
 
