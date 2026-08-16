@@ -8,6 +8,7 @@ from datetime import date
 import json
 import os
 import re
+import time
 
 from rank_bm25 import BM25Okapi
 
@@ -17,6 +18,7 @@ from slowapi.util import get_remote_address
 
 from rag import load_vector_store, build_vector_store
 import projects
+import analytics   # conversation log + answer cache (backend/analytics.py)
 
 
 vector_db = None
@@ -30,7 +32,9 @@ async def lifespan(app: FastAPI):
     global vector_db
     vector_db = load_vector_store()
     build_bm25()   # keyword index over the same chunks FAISS just loaded
+    await analytics.startup()   # opens the DB; on failure it disables itself
     yield
+    await analytics.shutdown()  # let in-flight log writes land
 
 
 app = FastAPI(lifespan=lifespan)
@@ -79,6 +83,17 @@ def client_ip(request: Request) -> str:
     return get_remote_address(request)
 
 
+def geo_country(request: Request) -> str | None:
+    """Some edge proxies (e.g. Cloudflare) stamp the visitor's country onto
+    the request as a header — free, no IP lookup. Locally and on plain
+    Render this returns None, which is fine."""
+    for h in ("cf-ipcountry", "x-vercel-ip-country", "x-geo-country"):
+        v = request.headers.get(h)
+        if v and v != "XX":
+            return v[:4]
+    return None
+
+
 limiter = Limiter(key_func=client_ip)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -114,6 +129,13 @@ OVERRIDES_PATH = os.path.join(_BASE_DIR, "data", "project_overrides.json")
 
 class ChatRequest(BaseModel):
     message: str
+    # Optional extras the frontend MAY send for analytics. All default to
+    # None, so the current frontend keeps working without any change.
+    visitor_id: str | None = None
+    session_id: str | None = None
+    referrer: str | None = None
+    page_url: str | None = None
+    utm_source: str | None = None
 
 
 class RepoRequest(BaseModel):
@@ -329,8 +351,42 @@ async def retrieve_docs(message: str, k: int = 8, keep: int = 5):
 @limiter.limit("20/minute")
 async def chat(request: Request, req: ChatRequest):
     # NOTE: the parameter MUST be named `request` for slowapi to find the IP.
+    t0 = time.perf_counter()
+
+    # Everything we know about the caller, resolved once and attached to
+    # every log row this request produces.
+    who = dict(
+        visitor_id=req.visitor_id,
+        session_id=req.session_id,
+        ip_hash=analytics.hash_ip(client_ip(request)),
+        country=geo_country(request),
+        user_agent=request.headers.get("user-agent"),
+        referrer=req.referrer,
+        page_url=req.page_url,
+        utm_source=req.utm_source,
+        question=req.message,
+    )
+
+    # 0) CACHE. If this exact question (ignoring case/punctuation) was
+    #    answered in the last CACHE_TTL_DAYS, replay the saved answer:
+    #    no OpenAI call, no daily-budget spend, near-zero latency. Checked
+    #    even before the vector_db readiness gate — a cached answer doesn't
+    #    need the index, so it works during cold starts too.
+    cached = await analytics.cache_get(req.message)
+    if cached is not None:
+        ms = int((time.perf_counter() - t0) * 1000)
+        analytics.log_turn_bg(**who, answer=cached, status="cache_hit",
+                              model="cache", ttft_ms=ms, total_ms=ms)
+
+        async def replay():
+            yield ": ok\n\n"
+            yield sse_token(cached)   # one big token; the frontend's
+            yield SSE_DONE            # typewriter still animates it nicely
+        return sse_response(replay())
 
     if vector_db is None:
+        analytics.log_turn_bg(**who, status="not_ready")
+
         async def not_ready():
             yield sse_token("Service is still starting up. Please try again in a moment.")
             yield SSE_DONE
@@ -338,7 +394,10 @@ async def chat(request: Request, req: ChatRequest):
 
     # Spend cap: past the daily budget we answer politely WITHOUT calling
     # OpenAI, so the worst-case daily bill is bounded no matter the traffic.
+    # Logged too — these rows tell you real traffic is being turned away.
     if daily_budget_spent():
+        analytics.log_turn_bg(**who, status="over_budget")
+
         async def over_budget():
             yield sse_token("The chatbot has hit its daily usage limit. "
                             "Please try again tomorrow, or email Aditya at "
@@ -353,37 +412,78 @@ async def chat(request: Request, req: ChatRequest):
     #    in retrieve_docs() above so the RAGAS eval exercises this same path.
     visible_docs = await retrieve_docs(req.message)
     context = "\n".join(d.page_content for d in visible_docs)
+    sources = sorted({d.metadata.get("repo") for d in visible_docs
+                      if d.metadata.get("repo")})
 
     # 2) AUGMENT — stuff the retrieved context into the prompt (the "A" in RAG).
     prompt = build_prompt(context, req.message)
 
     # 3) GENERATION — stream tokens back to the browser as they're produced.
+    #    While streaming we also ACCUMULATE the answer, because the log row
+    #    and the cache entry can only be written once the full text exists.
     async def token_stream():
-        # SSE comment frame, sent before the first OpenAI token exists. It's
-        # invisible to the client but pushes bytes down the wire immediately,
-        # so any proxy that waits for "first body bytes" opens the pipe now
-        # instead of when the model starts talking.
-        yield ": ok\n\n"
+        parts: list[str] = []
+        ttft_ms = None
+        usage = None
+        status = "aborted"   # flips to "ok" only if the stream completes
+
         try:
-            stream = await client.chat.completions.create(
+            # SSE comment frame, sent before the first OpenAI token exists.
+            # Invisible to the client but pushes bytes down the wire now, so
+            # proxies that wait for "first body bytes" open the pipe early.
+            yield ": ok\n\n"
+            try:
+                stream = await client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    max_tokens=250,
+                    stream=True,
+                    # Without this a streamed response reports NO token
+                    # counts. It adds one final chunk whose choices == [].
+                    stream_options={"include_usage": True},
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                )
+                async for chunk in stream:
+                    if getattr(chunk, "usage", None):
+                        usage = chunk.usage
+                    if not chunk.choices:
+                        continue          # the usage-only final chunk
+                    delta = chunk.choices[0].delta.content
+                    if delta:
+                        if ttft_ms is None:
+                            ttft_ms = int((time.perf_counter() - t0) * 1000)
+                        parts.append(delta)
+                        yield sse_token(delta)
+            except Exception:
+                status = "error"
+                yield sse_token("Sorry, I couldn't process that right now. "
+                                "Please try again later.")
+            # Explicit end-of-stream sentinel (same convention OpenAI's own
+            # API uses) so the client can tell "finished" from "died".
+            yield SSE_DONE
+            if status != "error":
+                status = "ok"
+        finally:
+            # Runs on success, on error, AND when the visitor closes the tab
+            # mid-answer (GeneratorExit) — partial answers are logged with
+            # status "aborted". Both calls are fire-and-forget: they add no
+            # latency and can never break the stream.
+            answer = "".join(parts)
+            analytics.log_turn_bg(
+                **who,
+                answer=answer,
+                sources=sources,
+                status=status,
                 model="gpt-4o-mini",
-                max_tokens=250,
-                stream=True,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
+                prompt_tokens=getattr(usage, "prompt_tokens", None),
+                completion_tokens=getattr(usage, "completion_tokens", None),
+                ttft_ms=ttft_ms,
+                total_ms=int((time.perf_counter() - t0) * 1000),
             )
-            async for chunk in stream:
-                delta = chunk.choices[0].delta.content
-                if delta:
-                    yield sse_token(delta)
-        except Exception:
-            yield sse_token("Sorry, I couldn't process that right now. "
-                            "Please try again later.")
-        # Explicit end-of-stream sentinel (same convention OpenAI's own API
-        # uses) so the client can distinguish "finished" from "connection died".
-        yield SSE_DONE
+            if status == "ok":
+                analytics.cache_put_bg(req.message, answer)
 
     return sse_response(token_stream())
 
@@ -459,6 +559,39 @@ async def admin_debug_retrieval(q: str,
     }
 
 
+@app.get("/admin/analytics")
+async def admin_analytics(days: int = 30,
+                          x_admin_token: str | None = Header(default=None)):
+    """Totals, cache-hit count, questions per day, traffic sources,
+    top questions. Try: curl -H "X-Admin-Token: $TOKEN" "$API/admin/analytics?days=7" """
+    _check_admin(x_admin_token)
+    return await analytics.summary(days)
+
+
+@app.get("/admin/transcripts")
+async def admin_transcripts(limit: int = 50, visitor_id: str | None = None,
+                            x_admin_token: str | None = Header(default=None)):
+    """Full Q&A log, newest first. Pass ?visitor_id=... to read one
+    person's entire history across visits."""
+    _check_admin(x_admin_token)
+    return {"turns": await analytics.recent(limit, visitor_id)}
+
+
+@app.get("/admin/cache")
+async def admin_cache(x_admin_token: str | None = Header(default=None)):
+    """What's cached right now, most-reused first."""
+    _check_admin(x_admin_token)
+    return {"cached": await analytics.cache_list()}
+
+
+@app.post("/admin/cache-clear")
+async def admin_cache_clear(x_admin_token: str | None = Header(default=None)):
+    """Manual flush — e.g. after you update project READMEs and want fresh
+    answers immediately instead of waiting out the TTL."""
+    _check_admin(x_admin_token)
+    return {"cleared": await analytics.cache_clear()}
+
+
 @app.post("/admin/hide")
 async def admin_hide(req: RepoRequest, bg: BackgroundTasks,
                      x_admin_token: str | None = Header(default=None)):
@@ -471,6 +604,9 @@ async def admin_hide(req: RepoRequest, bg: BackgroundTasks,
     projects.invalidate_cache()
     # Rebuild the chatbot's memory in the background so the response is instant.
     bg.add_task(_rebuild_index)
+    # Cached answers were written BEFORE the hide — they may mention the
+    # hidden repo, so the whole cache goes too.
+    bg.add_task(analytics.cache_clear)
     return {"ok": True, "hidden": data["hidden"],
             "note": "Frontend updates now. Chatbot forgets it within a few seconds. "
                     "Commit project_overrides.json to make this permanent across redeploys."}
@@ -487,5 +623,6 @@ async def admin_unhide(req: RepoRequest, bg: BackgroundTasks,
     _write_overrides(data)
     projects.invalidate_cache()
     bg.add_task(_rebuild_index)
+    bg.add_task(analytics.cache_clear)   # stale answers omit this repo
     return {"ok": True, "hidden": data["hidden"],
             "note": "Project is public again. Commit project_overrides.json to persist."}
