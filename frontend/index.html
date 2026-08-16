@@ -1385,6 +1385,40 @@
         ? "http://localhost:8000"
         : "https://portfolio-ai-qoer.onrender.com";
 
+    function newId() {
+      return (crypto.randomUUID && crypto.randomUUID()) ||
+        (Date.now().toString(36) + Math.random().toString(36).slice(2));
+    }
+    // Same browser, any day -> same id. Makes "unique visitors" real.
+    const visitorId = (() => {
+      try {
+        let v = localStorage.getItem('pf_visitor');
+        if (!v) { v = newId(); localStorage.setItem('pf_visitor', v); }
+        return v;
+      } catch (_) { return null; }
+    })();
+    // One id per open tab -> groups questions into a conversation.
+    const sessionId = (() => {
+      try {
+        let s = sessionStorage.getItem('pf_session');
+        if (!s) { s = newId(); sessionStorage.setItem('pf_session', s); }
+        return s;
+      } catch (_) { return null; }
+    })();
+    // Where they came from — captured once, because it vanishes on first click.
+    const arrivalRef = (() => {
+      try {
+        if (document.referrer) sessionStorage.setItem('pf_ref', document.referrer);
+        return document.referrer || sessionStorage.getItem('pf_ref');
+      } catch (_) { return document.referrer || null; }
+    })();
+    const utmSource = (() => {
+      const p = new URLSearchParams(location.search);
+      const v = p.get('src') || p.get('utm_source');
+      try { if (v) sessionStorage.setItem('pf_src', v); return v || sessionStorage.getItem('pf_src'); }
+      catch (_) { return v; }
+    })();
+
     function escapeHtml(s) {
       return (s || "").replace(/[&<>"']/g, c => (
         { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
@@ -1530,7 +1564,12 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            message: q
+            message: q,
+            visitor_id: visitorId,
+            session_id: sessionId,
+            referrer: arrivalRef,
+            page_url: location.href,
+            utm_source: utmSource
           })
         });
 
