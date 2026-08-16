@@ -12,3 +12,6 @@ openai
 python-dotenv
 slowapi
 rank_bm25
+sqlalchemy[asyncio]
+aiosqlite
+asyncpg
