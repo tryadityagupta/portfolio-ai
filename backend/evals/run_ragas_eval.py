@@ -62,6 +62,16 @@ if not os.getenv("OPENAI_API_KEY"):
         "RAGAS judge calls."
     )
 
+# The semantic cache must not contaminate retrieval-quality scores: RAGAS
+# exists to judge the REAL retrieve->generate path, and a similarity hit
+# would skip both. This eval already bypasses it structurally (it calls
+# retrieve_docs() directly, never /chat), but the flag is forced off anyway
+# so the guarantee survives future refactors, and so retrieve_docs takes the
+# identical embed-inside-search code path as a cache-disabled deployment.
+# setdefault, not overwrite — an explicit SEMANTIC_CACHE_ENABLED=1 still
+# wins if you ever deliberately want to eval cache behavior.
+os.environ.setdefault("SEMANTIC_CACHE_ENABLED", "0")
+
 # App modules — imported AFTER the env check so failures are readable.
 import main as app_main  # noqa: E402  (FastAPI app; importing it does not start a server)
 import rag  # noqa: E402

@@ -1,0 +1,68 @@
+[
+    {
+        "cached": "What projects has Aditya built?",
+        "query": "Which projects has Aditya worked on?",
+        "should_reuse": true,
+        "note": "pure paraphrase - same answer serves both"
+    },
+    {
+        "cached": "What projects has Aditya built?",
+        "query": "Which projects has Aditya built using Python?",
+        "should_reuse": false,
+        "note": "materially narrower - the qualifier changes the correct answer"
+    },
+    {
+        "cached": "What are Aditya's main AI and ML skills?",
+        "query": "Which AI and ML technologies does Aditya know?",
+        "should_reuse": true,
+        "note": "skills paraphrase from the spec"
+    },
+    {
+        "cached": "Where did Aditya study and how did he perform academically?",
+        "query": "What was Aditya's CGPA and which college did he attend?",
+        "should_reuse": true,
+        "note": "same facts requested with different surface form"
+    },
+    {
+        "cached": "What kind of work did Aditya do at Optum?",
+        "query": "Tell me about Aditya's experience at Optum.",
+        "should_reuse": true,
+        "note": "statement-form paraphrase of a question"
+    },
+    {
+        "cached": "Is Aditya currently open to new opportunities?",
+        "query": "Is Aditya open to relocating abroad?",
+        "should_reuse": false,
+        "note": "shares 'open to' phrasing but asks something else entirely"
+    },
+    {
+        "cached": "Has Aditya done any fine-tuning work?",
+        "query": "Has Aditya fine-tuned any models?",
+        "should_reuse": true,
+        "note": "verb-form variation"
+    },
+    {
+        "cached": "How did Aditya improve his email classifier's performance?",
+        "query": "What is the email classifier project?",
+        "should_reuse": false,
+        "note": "overview question vs improvement-story question about one project"
+    },
+    {
+        "cached": "Tell me about the RAG Document Chatbot project.",
+        "query": "How can I contact Aditya?",
+        "should_reuse": false,
+        "note": "unrelated - obvious miss, anchors the bottom of the scale"
+    },
+    {
+        "cached": "What is the Portfolio AI Chatbot project and what technologies does it use?",
+        "query": "What tech stack does the portfolio chatbot use?",
+        "should_reuse": true,
+        "note": "subset request the cached answer fully covers"
+    },
+    {
+        "cached": "What performance optimization is Aditya known for at work?",
+        "query": "What performance optimizations has Aditya made to his portfolio site?",
+        "should_reuse": false,
+        "note": "near-identical wording, different subject (work vs portfolio)"
+    }
+]
