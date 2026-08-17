@@ -2,8 +2,8 @@
     "name": "Aditya Gupta",
     "title": "AI/ML Engineer",
     "location": "Bengaluru, India",
-    "experience": "Software Engineer at Optum Global Solutions (Jul 2022 – Apr 2026)",
-    "optum_work": "At Optum I built Python-based automation frameworks and reusable API libraries integrated into Jenkins/Octopus CI/CD pipelines for large-scale healthcare data validation. My work focused on backend Python tooling, API integration, and data workflows. This deep work with Python and data pushed me toward ML and AI engineering.",
+    "experience": "Software Engineer at Optum Global Solutions from Jul 2022 to Apr 2026. This role has ended — Aditya no longer works at Optum. Since then he has been building AI/ML systems full-time and is actively interviewing for AI/ML and GenAI engineering roles.",
+    "optum_work": "At Optum Aditya built Python-based automation frameworks and reusable API libraries integrated into Jenkins/Octopus CI/CD pipelines for large-scale healthcare data validation. His work focused on backend Python tooling, API integration, and data workflows. This deep work with Python and data pushed him toward ML and AI engineering. (Past role, ended April 2026.)",
     "education": "B.Tech in Computer Science & Engineering from NIT Silchar (CGPA 8.54/10), Jul 2018 – May 2022",
     "skills": [
         "Python",
@@ -44,5 +44,5 @@
         "Recognized at Optum Q4 Kickoff",
         "Consistently rated Exceeds Expectations"
     ],
-    "availability": "Open to AI/ML Engineer roles and freelance AI projects"
+    "availability": "Available to start immediately. Open to AI/ML Engineer, GenAI Engineer and related roles, plus freelance AI projects."
 }

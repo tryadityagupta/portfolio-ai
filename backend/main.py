@@ -283,6 +283,28 @@ SYSTEM_PROMPT = (
 )
 
 
+def current_system_prompt() -> str:
+    """SYSTEM_PROMPT with today's date prepended.
+
+    The model has no clock, and its training predates the present. Without
+    an explicit date, a role in the context dated "Jul 2022 - Apr 2026"
+    reads as still upcoming, which is how this bot came to say Aditya "has
+    not left Optum yet" four months after he did.
+
+    Computed per request, not frozen at import: this process can stay alive
+    across midnight, and a date that silently goes stale is worse than no
+    date at all.
+    """
+    return (
+        f"CURRENT DATE: {date.today():%B %d, %Y}.\n"
+        "Use it to place every date in the context. An end date that has "
+        "already passed means a FORMER role — describe it in the past "
+        "tense and never imply Aditya still holds it. Only treat a role as "
+        "current if the context says so explicitly (e.g. 'Present').\n\n"
+        + SYSTEM_PROMPT
+    )
+
+
 def build_prompt(context: str, question: str) -> str:
     return f"""
 You are an AI assistant answering questions about Aditya Gupta.
@@ -564,7 +586,7 @@ async def chat(request: Request, req: ChatRequest):
                     # counts. It adds one final chunk whose choices == [].
                     stream_options={"include_usage": True},
                     messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "system", "content": current_system_prompt()},
                         {"role": "user", "content": prompt},
                     ],
                 )
