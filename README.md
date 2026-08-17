@@ -23,13 +23,23 @@ PORTFOLIO-AI/
 │   ├── data/
 │   │   ├── profile.json              # Structured profile data (skills, experience, achievements)
 │   │   └── project_overrides.json    # Visibility control: hidden / pinned / per-repo overrides
-│   ├── vector_store/                 # FAISS index — BUILT AT RUNTIME, NOT committed (gitignored)
+│   ├── vector_store/                 # Document FAISS index — BUILT AT RUNTIME, NOT committed (gitignored)
+│   ├── evals/
+│   │   ├── golden_dataset.json       # Questions with known-true reference answers
+│   │   ├── run_ragas_eval.py         # RAGAS scoring of the REAL retrieve→generate path
+│   │   ├── semantic_pairs.json       # Labeled paraphrase pairs (reuse-safe vs must-miss)
+│   │   └── eval_semantic_threshold.py# Sweeps SEMANTIC_CACHE_THRESHOLD candidates over real embeddings
+│   ├── tests/
+│   │   ├── conftest.py               # Counting fakes: embeddings, vector store, GPT stream
+│   │   └── test_semantic_cache.py    # Locks in the paid-call budget of every cache path
 │   ├── .env                          # Local secrets (not committed)
 │   ├── Aditya_Gupta_AI_ML.pdf        # Optional resume source for RAG (not committed)
 │   ├── github_sync.py                # Fetches repos + READMEs from the GitHub REST API
 │   ├── projects.py                   # Single source of truth: merges GitHub + overrides, applies hiding
-│   ├── main.py                       # FastAPI app: /chat, /projects, /admin/* , SSE streaming, lifespan
-│   ├── rag.py                        # Embedding, vector store build/load, profile + project doc loaders
+│   ├── analytics.py                  # Conversation log + two-level answer cache (SQLite/Postgres)
+│   ├── semantic_cache.py             # In-memory FAISS index over cached-QUESTION embeddings
+│   ├── main.py                       # FastAPI app: /chat, /projects, /admin/*, SSE streaming, lifespan
+│   ├── rag.py                        # Shared embeddings client, vector store build/load, doc loaders
 │   └── requirements.txt              # Python dependencies
 ├── frontend/
 │   ├── index.html                    # Single-page portfolio; renders project cards from /projects
@@ -47,10 +57,12 @@ PORTFOLIO-AI/
 | Backend | FastAPI (Python), async endpoints |
 | Streaming | Server-Sent Events (`text/event-stream`) over FastAPI `StreamingResponse` |
 | Project sync | GitHub REST API (via `urllib`, standard library) |
-| Embeddings | OpenAI `text-embedding-3-small` |
-| Vector Store | FAISS (CPU) |
+| Embeddings | OpenAI `text-embedding-3-small` (one shared client for documents *and* query embeddings) |
+| Vector Store | FAISS (CPU) — two separate indexes: document chunks + cached-question vectors |
 | LLM | OpenAI `gpt-4o-mini` (streaming) |
 | RAG Framework | LangChain |
+| Answer Cache | Two-level: exact normalized match → semantic (cosine ≥ threshold), SQLAlchemy-persisted |
+| Persistence | SQLite locally, Postgres in production (same code path, `DATABASE_URL` switches it) |
 | Deployment | Backend on Render · Frontend on Vercel (custom domain via GoDaddy DNS) |
 
 ---
@@ -72,19 +84,87 @@ same function. Because they share one filtered list, they can never disagree abo
 Matching against `hidden` / `pinned` / `overrides` is **case-insensitive**, so a repo GitHub returns as
 `AI-Codebase-Tutor` matches a lowercase key `ai-codebase-tutor`.
 
-### The chat request
+### The chat request — two cache levels in front of RAG
 
-1. **Retrieval** — the user's message is embedded and the top matches are pulled from FAISS
-   (`asimilarity_search`, the async variant). We fetch a few extra and drop any chunk whose `repo`
-   metadata is currently hidden, then keep the best 3 — a live safety net so a just-hidden project can't
-   surface even before the index rebuilds.
-2. **Augment** — those chunks are injected as context into the prompt (the "A" in RAG).
-3. **Generation** — `gpt-4o-mini` answers, streamed back to the browser as **Server-Sent Events**: each
-   token is emitted as its own `data: {"token": "..."}` frame, terminated by a `data: [DONE]` sentinel.
-   The frontend parses frames off the `ReadableStream` and feeds them into a typewriter queue.
+```
+User query
+   ↓
+Exact cache  (normalized string match, DB lookup)
+   ├─ HIT  → replay saved answer          — 0 OpenAI calls
+   └─ MISS
+        ↓  generate ONE query embedding
+Semantic cache  (cosine vs. previously cached questions, in-memory FAISS)
+   ├─ HIT  → replay saved answer          — 1 embedding call, 0 GPT calls
+   └─ MISS
+        ↓  REUSE the same embedding
+Hybrid retrieval:  FAISS (by-vector) + BM25 → RRF → hidden-repo filter
+        ↓
+gpt-4o-mini → streamed over SSE → background cache write (answer + embedding)
+```
+
+1. **Exact cache** — `"What are his SKILLS??"` and `"what are his skills"` normalize to the same key.
+   A hit replays the stored answer with **zero** OpenAI calls, zero retrieval, and no daily-budget
+   spend. Checked before anything else, so it even works during cold starts.
+2. **Semantic cache** — on an exact miss, the question is embedded **once** and compared (plain cosine
+   similarity, FAISS `IndexFlatIP` over normalized vectors) against the embeddings of previously
+   cached questions. `"Which projects has Aditya worked on?"` can reuse the answer cached for
+   `"What projects has Aditya built?"`. A hit costs one embedding call (~100× cheaper than a
+   generation) and skips retrieval + GPT entirely.
+3. **Retrieval on a miss** — the **same embedding is reused** for dense FAISS search
+   (`asimilarity_search_by_vector`), so a cache-miss request never embeds the query twice. BM25 gets
+   the raw string, results are fused with Reciprocal Rank Fusion, and chunks from currently-hidden
+   repos are dropped — the same live safety net as before.
+4. **Generation** — `gpt-4o-mini` answers, streamed as **Server-Sent Events** exactly as before: the
+   cache layers changed *whether* generation happens, never *how* streaming works.
+5. **Background cache write** — after a successful stream, the answer is saved along with the query
+   embedding **already generated in step 2** (no extra API call), fire-and-forget: cache writes can
+   never delay or break a response.
+
+**What each request path costs:**
+
+| Path | Embedding calls | GPT calls | Retrieval |
+|---|---|---|---|
+| Exact cache hit | 0 | 0 | none |
+| Semantic cache hit | 1 (0 if the in-process LRU has it) | 0 | none |
+| Cache miss (full RAG) | **1, reused for FAISS** | 1 | FAISS + BM25 |
+
+Semantic caching does **not** eliminate all OpenAI calls — a semantic hit still pays for one
+embedding, unless the tiny in-process LRU of recent query embeddings already holds that (normalized)
+question. What it eliminates is *generations*, which is where the money and latency are: the metric
+that matters is **GPT calls avoided while answers stay correct**, not raw hit rate.
+
+**Why similarity is cosine math, not an LLM judge:** asking a model "are these questions the same?"
+would cost latency and money on *every* request — including the misses — which defeats the point of a
+cache, and it would make cache behavior non-deterministic and untestable. A vector comparison is
+microseconds, free, and reproducible in tests.
+
+**Why the threshold is conservative (default `0.92`):** serving a *wrong* cached answer on a
+portfolio is strictly worse than paying for one more `gpt-4o-mini` generation, so false negatives are
+preferred over false positives. `"Which projects has Aditya built using Python?"` should *not* reuse
+the generic projects answer even though the wording is close. The threshold is an env var, tuned with
+evidence: `evals/eval_semantic_threshold.py` sweeps candidates over labeled paraphrase pairs, and
+`/admin/analytics` reports the similarity distribution of real hits. An optional margin gate
+(`SEMANTIC_CACHE_MIN_MARGIN`) can additionally reject queries that sit ambiguously between two
+different cached questions.
+
+**How cached answers stay fresh and private:**
+
+- **TTL** — entries older than `CACHE_TTL_DAYS` (default 7) are never served, no matter how similar;
+  they're lazily deleted on touch.
+- **Knowledge versioning** — every cached answer is stamped with the knowledge-base version that
+  produced it. Rebuilding the index (e.g. hide/unhide) mints a new version, instantly invalidating
+  answers generated from the old knowledge state.
+- **Hide/unhide clears everything** — hiding a project still wipes the *entire* answer cache **and**
+  resets the in-memory question index in the same action, so a hidden project can never resurface
+  through a similarity hit. Vectors never outlive their database rows.
+- **Kill switch** — `SEMANTIC_CACHE_ENABLED=0` reverts to the plain exact-cache → RAG → GPT pipeline
+  (retrieval embeds internally again, rows are written without vectors): a one-variable rollback.
 
 The non-blocking `AsyncOpenAI` client is used throughout, so a slow OpenAI call for one visitor doesn't
-freeze the server for others (concurrency).
+freeze the server for others (concurrency). The semantic index itself is process-local and rebuilt at
+startup from vectors already stored in the database — **zero** embedding API calls at boot, however
+many rows exist. Rows written before this feature simply lack vectors: they keep serving exact hits
+and age out via the TTL, no backfill job required.
 
 ### Server startup
 
@@ -140,7 +220,19 @@ OPENAI_API_KEY=sk-...
 GITHUB_TOKEN=github_pat_...     # optional but recommended (avoids GitHub rate limits)
 ADMIN_TOKEN=some-long-random-string   # required only to use the admin panel
 # GITHUB_USERNAME=tryadityagupta      # optional; this is the default
+
+# Answer cache (all optional — these are the defaults):
+# CACHE_TTL_DAYS=7                    # how long any cached answer stays valid
+# SEMANTIC_CACHE_ENABLED=1            # 0 = rollback to exact-cache → RAG → GPT
+# SEMANTIC_CACHE_THRESHOLD=0.92      # min cosine similarity to reuse an answer
+# SEMANTIC_CACHE_MIN_MARGIN=0        # >0 also requires top hit to beat runner-up by this
+# SEMANTIC_CACHE_MAX_ENTRIES=500     # cap on embedded rows; least-hit/oldest evicted first
+# DAILY_CHAT_BUDGET=300              # max answered requests/day (spend cap)
 ```
+
+Nothing new is *required* to boot — every semantic-cache variable has a working default, and an
+existing `analytics.db` from before the semantic cache opens as-is (the new nullable columns are
+added automatically on startup).
 
 Run the server (the index builds itself on first boot):
 
@@ -212,8 +304,13 @@ pages over `localhost` (not `file://`) so this detection works. The admin panel 
 | GET | `/projects` | — | The visible (hidden-filtered) project list the frontend renders. |
 | POST | `/chat` | — | Accepts `{"message": "..."}`. Returns a **Server-Sent Events** stream (`text/event-stream`): each token arrives as a `data: {"token": "..."}\n\n` frame, and the stream ends with `data: [DONE]\n\n`. Rate-limited to 20/min per IP; on 429 the body is plain JSON, not a stream. |
 | GET | `/admin/projects` | `X-Admin-Token` | Every owned repo + whether it's currently hidden (powers the toggles). |
-| POST | `/admin/hide` | `X-Admin-Token` | Body `{"repo": "..."}` — hides a repo, rebuilds the index. |
-| POST | `/admin/unhide` | `X-Admin-Token` | Body `{"repo": "..."}` — un-hides a repo, rebuilds the index. |
+| POST | `/admin/hide` | `X-Admin-Token` | Body `{"repo": "..."}` — hides a repo, rebuilds the index, bumps the knowledge version, clears **both** cache levels. |
+| POST | `/admin/unhide` | `X-Admin-Token` | Body `{"repo": "..."}` — un-hides a repo; same rebuild + cache-clear sequence. |
+| GET | `/admin/analytics` | `X-Admin-Token` | Traffic totals plus cache economics: exact vs. semantic hits, total hit rate, GPT generations, and the similarity distribution (avg/min) of semantic hits. |
+| GET | `/admin/transcripts` | `X-Admin-Token` | Full Q&A log, newest first; `?visitor_id=` filters one visitor. |
+| GET | `/admin/cache` | `X-Admin-Token` | Cached answers (question, hits, `embedding_available`, knowledge version, answer preview) + live semantic-cache state: enabled flag, in-memory vector count, threshold, margin. Raw vectors are never exposed. |
+| POST | `/admin/cache-clear` | `X-Admin-Token` | Wipes the answer cache **and** resets the in-memory semantic index in the same call. |
+| GET | `/admin/debug-retrieval` | `X-Admin-Token` | `?q=...` — shows the exact fused chunks retrieval would feed the model for `q`. |
 
 ### `/chat` response format
 
@@ -249,6 +346,34 @@ rebuilds it whenever you hide/unhide a project.
 resume content. Committing it to a public repo would expose that text (recoverable via unpickling) even
 though the chatbot is instructed not to reveal it. Building at runtime keeps that text out of the repo,
 and guarantees a hidden project is never embedded in the first place.
+
+---
+
+## Evaluation & Tests
+
+Three harnesses, three different questions:
+
+```bash
+cd backend
+
+# 1) Does the RAG pipeline still answer well? (RAGAS: faithfulness, relevancy,
+#    context precision/recall — runs the REAL retrieve→generate path with the
+#    semantic cache forced OFF, so similarity hits can't inflate the scores)
+python evals/run_ragas_eval.py
+
+# 2) Where should the semantic threshold sit? Sweeps candidate thresholds over
+#    labeled paraphrase pairs (evals/semantic_pairs.json) using real embeddings,
+#    and reports hits / false positives / false negatives per threshold.
+python evals/eval_semantic_threshold.py
+
+# 3) Does the cache behave? Offline unit + API tests with counting fakes — no
+#    network, no API key spend. Locks in the paid-call budget of every path
+#    (exact hit = 0 calls, semantic hit = 1 embedding, miss = 1 embedding + 1
+#    generation with the embedding reused), plus TTL expiry, knowledge-version
+#    invalidation, hide/clear privacy, eviction order, and the rollback flag.
+pip install -r tests/requirements-test.txt
+python -m pytest tests/ -q
+```
 
 ---
 
@@ -361,10 +486,27 @@ the "Thinking…" indicator covers retrieval and model latency instead of vanish
 The task is grounded, single-pass Q&A over a small retrieved context. A small fast model answers this
 just as well, far cheaper, and with lower latency; a reasoning model would only add latency.
 
-### Why `AsyncOpenAI` and `asimilarity_search`?
+### Why `AsyncOpenAI` and async similarity search?
 
-The endpoint is `async`; using the async client and async similarity search lets the server handle
-concurrent visitors without serializing them behind one another.
+The endpoint is `async`; using the async client and async similarity search
+(`asimilarity_search_by_vector` when the query vector already exists, `asimilarity_search` otherwise)
+lets the server handle concurrent visitors without serializing them behind one another.
+
+### Why does the semantic cache reuse the retrieval embedding?
+
+A cache-miss request needs the query embedded twice conceptually — once to compare against cached
+questions, once for dense document retrieval — but both consumers want the *same vector for the same
+string*. Generating it once and passing it into `retrieve_docs(query_embedding=...)` halves the
+embedding spend and latency of every miss, and makes "exactly one embedding call per request" a
+testable invariant (`tests/test_semantic_cache.py` asserts it, down to vector identity).
+
+### Why two FAISS indexes instead of one?
+
+They index different things for different questions: the document index maps *content chunks* to
+"what's relevant to this query"; the semantic-cache index maps *past questions* to "have we answered
+this before". Mixing them would let cached questions compete with real documents during retrieval.
+The cache index is tiny (capped by `SEMANTIC_CACHE_MAX_ENTRIES`), flat (`IndexFlatIP` — exact search,
+no training), in-memory, and rebuilt at boot from vectors already stored in the database.
 
 ### Why OpenAI embeddings instead of HuggingFace?
 

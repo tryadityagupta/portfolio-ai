@@ -25,6 +25,28 @@ PROFILE_PATH = os.path.join(_BASE_DIR, "data", "profile.json")
 # Render secret file (base64 text)
 RESUME_B64_PATH = "/etc/secrets/resume_b64.txt"
 
+# ONE embedding model name for the whole app. The semantic cache stamps each
+# stored vector with this string and refuses vectors from any other model at
+# load time — cosine similarity between vectors from different models is
+# meaningless, so a model swap must quietly restart the cache, not corrupt it.
+EMBEDDING_MODEL = "text-embedding-3-small"
+
+_embeddings: OpenAIEmbeddings | None = None
+
+
+def get_embeddings() -> OpenAIEmbeddings:
+    """The shared OpenAIEmbeddings client. Built once, reused everywhere:
+    document store build/load AND per-request query embeddings (main.py).
+    One object = one underlying HTTP client with connection pooling, instead
+    of a new client per call — and one place where the model is chosen."""
+    global _embeddings
+    if _embeddings is None:
+        _embeddings = OpenAIEmbeddings(
+            model=EMBEDDING_MODEL,
+            api_key=os.getenv("OPENAI_API_KEY")
+        )
+    return _embeddings
+
 
 def _resolve_resume_pdf():
     """Return the path to a readable resume PDF, or None.
@@ -79,10 +101,7 @@ def build_vector_store():
     #    never embedded and the chatbot literally has no memory of them.
     chunks.extend(load_project_documents())
 
-    embeddings = OpenAIEmbeddings(
-        model="text-embedding-3-small",
-        api_key=os.getenv("OPENAI_API_KEY")
-    )
+    embeddings = get_embeddings()   # shared client — see top of file
 
     vectorstore = None
 
@@ -105,10 +124,7 @@ def build_vector_store():
 
 def load_vector_store():
 
-    embeddings = OpenAIEmbeddings(
-        model="text-embedding-3-small",
-        api_key=os.getenv("OPENAI_API_KEY")
-    )
+    embeddings = get_embeddings()   # shared client — see top of file
 
     # If no prebuilt index exists (e.g. first boot on a fresh server because we
     # no longer commit the index), build it now from live data.

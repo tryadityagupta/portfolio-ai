@@ -48,17 +48,22 @@ import asyncio
 import hashlib
 import os
 import re
+import secrets
 import sys
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from sqlalchemy import (
-    JSON, DateTime, Index, Integer, String, Text, delete, desc, func, select,
+    JSON, DateTime, Float, Index, Integer, LargeBinary, String, Text,
+    delete, desc, func, select,
 )
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import (
     AsyncSession, async_sessionmaker, create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+import semantic_cache   # in-memory FAISS twin of the embedded cache rows
 
 # --------------------------------------------------------------------------
 # CONFIG
@@ -74,6 +79,14 @@ RETENTION_DAYS = int(os.getenv("ANALYTICS_RETENTION_DAYS", "365"))
 
 CACHE_TTL_DAYS = int(os.getenv("CACHE_TTL_DAYS", "7"))
 CACHE_MIN_ANSWER = 20         # don't cache empty / one-word junk
+
+# Cap on rows that carry an embedding (== vectors in the in-memory FAISS
+# index). When exceeded, the LOWEST-value rows go first: fewest hits, then
+# least-recently hit, then oldest — an LFU-then-LRU blend built from columns
+# the cache already tracks. Rows WITHOUT embeddings (pre-feature legacy) are
+# untouched here; the TTL retires them.
+SEMANTIC_CACHE_MAX_ENTRIES = int(
+    os.getenv("SEMANTIC_CACHE_MAX_ENTRIES", "500"))
 
 
 def _normalise_url(raw: str) -> tuple[str, dict]:
@@ -145,13 +158,21 @@ class ChatTurn(Base):
 
     # --- how it went ----------------------------------------------------------
     status: Mapped[str] = mapped_column(String(16), default="ok")
-    # "ok" | "cache_hit" | "error" | "aborted" | "over_budget" | "not_ready"
+    # "ok" | "cache_hit" | "semantic_hit" | "error" | "aborted"
+    # | "over_budget" | "not_ready"
+    # ("cache_hit" stays the EXACT-match status so old rows and any dashboards
+    #  built on it keep meaning the same thing; "semantic_hit" is new and fits
+    #  the existing String(16) column, unlike "cache_semantic_hit".)
     model: Mapped[str | None] = mapped_column(String(60))
     prompt_tokens: Mapped[int | None] = mapped_column(Integer)
     completion_tokens: Mapped[int | None] = mapped_column(Integer)
     ttft_ms: Mapped[int | None] = mapped_column(
         Integer)   # time to first token
     total_ms: Mapped[int | None] = mapped_column(Integer)
+    cache_similarity: Mapped[float | None] = mapped_column(
+        Float)   # cosine score, set only on status == "semantic_hit" rows —
+    # lets /admin/analytics show the observed similarity distribution, which
+    # is the evidence for tuning SEMANTIC_CACHE_THRESHOLD later.
 
     __table_args__ = (
         Index("ix_turns_created_at", "created_at"),
@@ -161,7 +182,14 @@ class ChatTurn(Base):
 
 
 class CachedAnswer(Base):
-    """THE CACHE: one saved answer per distinct (normalized) question."""
+    """THE CACHE: one saved answer per distinct (normalized) question.
+
+    Since the semantic-cache feature, a row MAY also carry the embedding of
+    its question. Rows written before the feature have embedding = NULL and
+    keep working exactly as before (exact-match only); they simply don't
+    participate in semantic lookups and retire via the normal TTL. No
+    backfill job re-embeds them — that would mean surprise OpenAI spend at
+    startup for rows that expire within CACHE_TTL_DAYS anyway."""
 
     __tablename__ = "answer_cache"
 
@@ -176,6 +204,36 @@ class CachedAnswer(Base):
     hits: Mapped[int] = mapped_column(Integer, default=0)
     last_hit_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True))
+
+    # --- semantic-cache extension (all nullable => additive migration) ----
+    embedding: Mapped[bytes | None] = mapped_column(
+        LargeBinary)   # float32 LE bytes (semantic_cache.to_bytes): ~6 KB
+    # per 1536-dim vector vs ~30 KB as a JSON float list. BLOB on SQLite,
+    # BYTEA on Postgres — both native.
+    embedding_model: Mapped[str | None] = mapped_column(String(60))
+    embedding_dim: Mapped[int | None] = mapped_column(Integer)
+    knowledge_version: Mapped[str | None] = mapped_column(String(64))
+    # ^ which knowledge-base build produced this answer. NULL = legacy row
+    # from before versioning existed: still valid for EXACT hits (unchanged
+    # behavior), excluded from the semantic index (it has no embedding).
+
+
+class AppMeta(Base):
+    """One-row-per-key settings store. Currently holds only the knowledge
+    version — a random token regenerated whenever the RAG index is rebuilt,
+    so cached answers can be pinned to the knowledge state that produced
+    them. Deliberately not a 'versioning system': one value, one writer."""
+
+    __tablename__ = "app_meta"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str | None] = mapped_column(String(128))
+
+
+_KNOWLEDGE_VERSION_KEY = "knowledge_version"
+_knowledge_version: str | None = None
+_loop: asyncio.AbstractEventLoop | None = None   # captured in startup(); lets
+# bump_knowledge_version_bg() work from BackgroundTasks worker threads too.
 
 
 _WORD_STRIP = re.compile(r"[^\w\s]")   # drop punctuation, keep letters/digits
@@ -203,7 +261,7 @@ _pending: set[asyncio.Task] = set()
 async def startup() -> None:
     """Call once from the FastAPI lifespan. If the DB can't be reached it
     disables itself with a printed warning instead of crashing the app."""
-    global _engine, _Session
+    global _engine, _Session, _loop
 
     if ANALYTICS_OFF:
         print("[analytics] disabled via ANALYTICS_OFF", file=sys.stderr)
@@ -211,6 +269,7 @@ async def startup() -> None:
 
     url, connect_args = _normalise_url(DATABASE_URL)
     try:
+        _loop = asyncio.get_running_loop()
         _engine = create_async_engine(
             url,
             connect_args=connect_args,
@@ -221,12 +280,98 @@ async def startup() -> None:
         )
         async with _engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            # create_all builds MISSING TABLES but never alters existing
+            # ones, so an analytics.db from before the semantic cache would
+            # lack the new columns and every SELECT would fail. This adds
+            # exactly the missing nullable columns — additive, idempotent,
+            # works on SQLite and Postgres.
+            await conn.run_sync(_migrate_add_missing_columns)
         _Session = async_sessionmaker(_engine, expire_on_commit=False)
+        await _load_or_init_knowledge_version()
         print(
             f"[analytics] ready ({url.split('@')[-1][:40]})", file=sys.stderr)
     except Exception as e:
         _engine, _Session = None, None
         print(f"[analytics] DISABLED, init failed: {e!r}", file=sys.stderr)
+
+
+def _migrate_add_missing_columns(conn) -> None:
+    """ALTER TABLE ... ADD COLUMN for any model column absent from the live
+    table. Only ever ADDS nullable columns — never drops, renames or
+    rewrites — so it is safe to run on every boot against existing data."""
+    insp = sa_inspect(conn)
+    for table in Base.metadata.sorted_tables:
+        if not insp.has_table(table.name):
+            continue                      # create_all just made it; complete
+        existing = {c["name"] for c in insp.get_columns(table.name)}
+        for col in table.columns:
+            if col.name in existing:
+                continue
+            ddl_type = col.type.compile(dialect=conn.dialect)
+            conn.exec_driver_sql(
+                f"ALTER TABLE {table.name} ADD COLUMN {col.name} {ddl_type}")
+            print(f"[analytics] migrated: {table.name}.{col.name} "
+                  f"({ddl_type})", file=sys.stderr)
+
+
+# --------------------------------------------------------------------------
+# KNOWLEDGE VERSION — pins cached answers to the knowledge state that
+# produced them. main._rebuild_index() bumps it; both cache read paths
+# refuse rows stamped with any OTHER (non-NULL) version.
+# --------------------------------------------------------------------------
+
+def get_knowledge_version() -> str | None:
+    return _knowledge_version
+
+
+async def _load_or_init_knowledge_version() -> None:
+    global _knowledge_version
+    async with _Session() as s:
+        row = await s.get(AppMeta, _KNOWLEDGE_VERSION_KEY)
+        if row is None or not row.value:
+            row = AppMeta(key=_KNOWLEDGE_VERSION_KEY,
+                          value=secrets.token_hex(8))
+            await s.merge(row)   # merge: races with a twin worker are benign
+            await s.commit()
+        _knowledge_version = row.value
+
+
+async def _persist_knowledge_version(version: str) -> None:
+    try:
+        async with _Session() as s:
+            await s.merge(AppMeta(key=_KNOWLEDGE_VERSION_KEY, value=version))
+            await s.commit()
+    except Exception as e:
+        print(f"[analytics] version persist failed: {e!r}", file=sys.stderr)
+
+
+def bump_knowledge_version_bg() -> str | None:
+    """Mint a NEW version. The in-memory copy flips immediately — so /chat
+    stops trusting old-version cache rows the instant the knowledge base
+    changes — and the DB write is fire-and-forget. Callable from the event
+    loop OR from a BackgroundTasks worker thread (where _rebuild_index runs):
+    the thread case schedules the write onto the captured startup loop."""
+    global _knowledge_version
+    if _Session is None:
+        return None
+    new = secrets.token_hex(8)
+    _knowledge_version = new
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    try:
+        if loop is not None:                      # already on the app loop
+            task = loop.create_task(_persist_knowledge_version(new))
+            _pending.add(task)
+            task.add_done_callback(_pending.discard)
+        elif _loop is not None:                   # worker thread → app loop
+            asyncio.run_coroutine_threadsafe(
+                _persist_knowledge_version(new), _loop)
+    except Exception as e:
+        print(f"[analytics] version bump schedule failed: {e!r}",
+              file=sys.stderr)
+    return new
 
 
 async def shutdown() -> None:
@@ -282,11 +427,37 @@ async def _write_turn(fields: dict) -> None:
 # THE CACHE
 # --------------------------------------------------------------------------
 
+def _row_unusable(row: CachedAnswer) -> bool:
+    """A cached row may be served only if it is (a) inside the TTL and
+    (b) not stamped with a DIFFERENT knowledge version. Applies identically
+    to exact and semantic hits — high cosine similarity never overrides
+    freshness. NULL version = legacy row = exempt from (b), which keeps
+    pre-feature caches behaving exactly as before this change."""
+    created = row.created_at
+    if created is not None and created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)  # SQLite quirk
+    expired = (created is None or
+               created < datetime.now(timezone.utc) - timedelta(days=CACHE_TTL_DAYS))
+    current = _knowledge_version
+    stale = (row.knowledge_version is not None and current is not None
+             and row.knowledge_version != current)
+    return expired or stale
+
+
+async def _drop_row(s: AsyncSession, row: CachedAnswer) -> None:
+    """Lazy deletion of an unusable row + its in-memory vector, so the FAISS
+    index never keeps pointing at a database row that no longer exists."""
+    rid = row.id
+    await s.delete(row)
+    await s.commit()
+    await semantic_cache.cache_index.remove(rid)
+
+
 async def cache_get(question: str) -> str | None:
     """Return a saved answer for this question, or None.
     Called INLINE at the top of /chat (we must know the result before
     deciding whether to call OpenAI). One indexed read — sub-millisecond
-    on SQLite. Also counts the hit and enforces the TTL."""
+    on SQLite. Also counts the hit and enforces TTL + knowledge version."""
     if _Session is None:
         return None
     qn = normalize_question(question)
@@ -299,15 +470,8 @@ async def cache_get(question: str) -> str | None:
             )).scalar_one_or_none()
             if row is None:
                 return None
-
-            created = row.created_at
-            if created is not None and created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)  # SQLite quirk
-            expired = (created is None or
-                       created < datetime.now(timezone.utc) - timedelta(days=CACHE_TTL_DAYS))
-            if expired:
-                await s.delete(row)
-                await s.commit()
+            if _row_unusable(row):
+                await _drop_row(s, row)
                 return None
 
             row.hits += 1
@@ -319,9 +483,45 @@ async def cache_get(question: str) -> str | None:
         return None
 
 
-def cache_put_bg(question: str, answer: str) -> None:
+async def cache_get_by_id(cache_id: int) -> str | None:
+    """The semantic-cache follow-up read: the FAISS index said 'row N looks
+    like this question' — this validates row N is still servable (exists,
+    unexpired, current knowledge version) and counts the hit. Returning None
+    tells the caller to treat it as a miss; the caller also removes the
+    dangling vector so the same stale id can't win the next lookup."""
+    if _Session is None:
+        return None
+    try:
+        async with _Session() as s:
+            row = await s.get(CachedAnswer, cache_id)
+            if row is None:
+                return None
+            if _row_unusable(row):
+                await _drop_row(s, row)
+                return None
+
+            row.hits += 1
+            row.last_hit_at = datetime.now(timezone.utc)
+            await s.commit()
+            return row.answer
+    except Exception as e:
+        print(f"[analytics] cache_get_by_id failed: {e!r}", file=sys.stderr)
+        return None
+
+
+def cache_put_bg(question: str, answer: str,
+                 embedding: list[float] | None = None,
+                 embedding_model: str | None = None,
+                 knowledge_version: str | None = None) -> None:
     """Save an answer for next time. Fire-and-forget, called from the
-    stream's finally block — only for status == 'ok' answers."""
+    stream's finally block — only for status == 'ok' answers.
+
+    `embedding` is the SAME vector /chat already generated for this request
+    (semantic lookup + FAISS retrieval reused it) — persisting it here is
+    free. This function never calls an embedding API; if no vector is passed
+    (semantic cache disabled, or the embed call failed), the row is written
+    without one and serves exact-match hits only, i.e. the pre-feature
+    behavior."""
     if _Session is None:
         return
     if not answer or len(answer) < CACHE_MIN_ANSWER:
@@ -331,43 +531,143 @@ def cache_put_bg(question: str, answer: str) -> None:
         return
     try:
         task = asyncio.create_task(
-            _cache_write(qn, question[:MAX_QUESTION], answer[:MAX_ANSWER]))
+            _cache_write(qn, question[:MAX_QUESTION], answer[:MAX_ANSWER],
+                         embedding, embedding_model, knowledge_version))
         _pending.add(task)
         task.add_done_callback(_pending.discard)
     except RuntimeError:
         pass
 
 
-async def _cache_write(qn: str, qraw: str, answer: str) -> None:
+async def _cache_write(qn: str, qraw: str, answer: str,
+                       embedding: list[float] | None,
+                       embedding_model: str | None,
+                       knowledge_version: str | None) -> None:
     try:
+        emb_bytes = (semantic_cache.to_bytes(embedding)
+                     if embedding is not None else None)
+        emb_dim = len(embedding) if embedding is not None else None
+
         async with _Session() as s:
-            exists = (await s.execute(
-                select(CachedAnswer.id).where(CachedAnswer.question_norm == qn)
+            existing = (await s.execute(
+                select(CachedAnswer).where(CachedAnswer.question_norm == qn)
             )).scalar_one_or_none()
-            if exists is not None:
-                return          # first answer wins until TTL expiry / clear
-            s.add(CachedAnswer(question_norm=qn, question_raw=qraw, answer=answer))
-            await s.commit()
+
+            if existing is not None:
+                # First answer wins until TTL expiry / clear. One exception:
+                # two CONCURRENT misses on the same normalized question both
+                # generate, the loser lands here — if the winner has no
+                # embedding yet, attach ours (same normalized question ⇒
+                # same vector semantics). Heals the row into the semantic
+                # index instead of discarding a vector we already paid for.
+                if (existing.embedding is None and emb_bytes is not None
+                        and not _row_unusable(existing)):
+                    existing.embedding = emb_bytes
+                    existing.embedding_model = embedding_model
+                    existing.embedding_dim = emb_dim
+                    existing.knowledge_version = (existing.knowledge_version
+                                                  or knowledge_version)
+                    await s.commit()
+                    await semantic_cache.cache_index.add(existing.id, embedding)
+                return
+
+            row = CachedAnswer(
+                question_norm=qn, question_raw=qraw, answer=answer,
+                embedding=emb_bytes, embedding_model=embedding_model,
+                embedding_dim=emb_dim, knowledge_version=knowledge_version)
+            s.add(row)
+            await s.commit()   # commit assigns row.id — needed as FAISS id
+            new_id = row.id
+
+        if emb_bytes is not None:
+            # A bump between generation and this write means the row is
+            # already stale — leave it out of the index (reads would reject
+            # it anyway; this just avoids pointless lookup work).
+            if knowledge_version == _knowledge_version:
+                await semantic_cache.cache_index.add(new_id, embedding)
+            await _evict_over_limit()
     except Exception as e:
         # Includes the harmless race where two identical questions arrive at
         # once and both try to insert — the unique index rejects the second.
         print(f"[analytics] cache write failed: {e!r}", file=sys.stderr)
 
 
+async def _evict_over_limit() -> None:
+    """Keep at most SEMANTIC_CACHE_MAX_ENTRIES embedded rows. Runs inside
+    the background write task, never on a user's request path. Eviction
+    order = lowest value first: fewest hits, then least-recently used
+    (never-hit rows first), then oldest."""
+    try:
+        async with _Session() as s:
+            n = (await s.execute(
+                select(func.count(CachedAnswer.id))
+                .where(CachedAnswer.embedding.is_not(None))
+            )).scalar_one()
+            overflow = n - SEMANTIC_CACHE_MAX_ENTRIES
+            if overflow <= 0:
+                return
+            victims = (await s.execute(
+                select(CachedAnswer.id)
+                .where(CachedAnswer.embedding.is_not(None))
+                .order_by(CachedAnswer.hits.asc(),
+                          CachedAnswer.last_hit_at.asc().nulls_first(),
+                          CachedAnswer.created_at.asc())
+                .limit(overflow)
+            )).scalars().all()
+            if not victims:
+                return
+            await s.execute(
+                delete(CachedAnswer).where(CachedAnswer.id.in_(victims)))
+            await s.commit()
+        await semantic_cache.cache_index.remove_many(list(victims))
+        print(f"[analytics] semantic cache evicted {len(victims)} "
+              f"row(s) (cap {SEMANTIC_CACHE_MAX_ENTRIES})", file=sys.stderr)
+    except Exception as e:
+        print(f"[analytics] eviction failed: {e!r}", file=sys.stderr)
+
+
+async def load_semantic_entries(embedding_model: str) -> list[tuple[int, bytes]]:
+    """Startup feed for the in-memory index: (id, embedding bytes) of every
+    row that is still servable AND was embedded with the model the app is
+    running now. Pure database read — zero OpenAI calls, so boot cost stays
+    flat no matter how many rows exist. Rows without embeddings are simply
+    not semantic candidates (legacy rows; also rows written while the
+    feature was disabled)."""
+    if _Session is None:
+        return []
+    cutoff = datetime.now(timezone.utc) - timedelta(days=CACHE_TTL_DAYS)
+    current = _knowledge_version
+    q = (select(CachedAnswer.id, CachedAnswer.embedding)
+         .where(CachedAnswer.embedding.is_not(None),
+                CachedAnswer.embedding_model == embedding_model,
+                CachedAnswer.created_at >= cutoff))
+    if current is not None:
+        q = q.where((CachedAnswer.knowledge_version.is_(None)) |
+                    (CachedAnswer.knowledge_version == current))
+    async with _Session() as s:
+        rows = (await s.execute(q)).all()
+    return [(rid, emb) for rid, emb in rows]
+
+
 async def cache_clear() -> int:
     """Wipe the whole cache. Wired to /admin/cache-clear and to hide/unhide,
     because a cached answer written before you hid a project could still
-    mention it."""
+    mention it. The in-memory semantic index is reset in the same call —
+    THE privacy invariant of this feature: a vector must never outlive its
+    row, or a hidden project could resurface through a similarity hit."""
     if _Session is None:
         return 0
     async with _Session() as s:
         res = await s.execute(delete(CachedAnswer))
         await s.commit()
+    await semantic_cache.cache_index.reset()
     return res.rowcount or 0
 
 
 async def cache_list(limit: int = 100) -> list[dict]:
-    """What's cached right now, most-reused first."""
+    """What's cached right now, most-reused first. Exposes WHETHER a row has
+    an embedding, never the vector itself — 1536 floats are noise in an
+    admin table and don't belong in API responses."""
     if _Session is None:
         return []
     async with _Session() as s:
@@ -379,6 +679,8 @@ async def cache_list(limit: int = 100) -> list[dict]:
         "hits": r.hits,
         "cached_at": r.created_at.isoformat() if r.created_at else None,
         "answer_preview": (r.answer or "")[:120],
+        "embedding_available": r.embedding is not None,
+        "knowledge_version": r.knowledge_version,
     } for r in rows]
 
 
@@ -402,9 +704,25 @@ async def summary(days: int = 30) -> dict:
             ).where(ChatTurn.created_at >= since)
         )).one()
 
-        cache_hits = (await s.execute(
+        exact_hits = (await s.execute(
             select(func.count(ChatTurn.id))
             .where(ChatTurn.created_at >= since, ChatTurn.status == "cache_hit")
+        )).scalar_one()
+
+        semantic_hits, sim_avg, sim_min = (await s.execute(
+            select(func.count(ChatTurn.id),
+                   func.avg(ChatTurn.cache_similarity),
+                   func.min(ChatTurn.cache_similarity))
+            .where(ChatTurn.created_at >= since,
+                   ChatTurn.status == "semantic_hit")
+        )).one()
+
+        # Answers that DID cost a GPT generation in this window — the number
+        # the whole cache exists to shrink. "GPT calls avoided" is exactly
+        # exact_hits + semantic_hits over the same window.
+        generated = (await s.execute(
+            select(func.count(ChatTurn.id))
+            .where(ChatTurn.created_at >= since, ChatTurn.status == "ok")
         )).scalar_one()
 
         by_day = (await s.execute(
@@ -437,10 +755,24 @@ async def summary(days: int = 30) -> dict:
             .order_by(desc("n")).limit(20)
         )).all()
 
+    total_cache_hits = exact_hits + semantic_hits
+    answerable = total_cache_hits + generated   # excludes errors/over_budget
+
     return {
         "window_days": days,
         "turns": totals[0],
-        "answered_from_cache": cache_hits,
+        # answered_from_cache keeps its old meaning (any cache hit) so
+        # existing consumers of this endpoint don't shift under you.
+        "answered_from_cache": total_cache_hits,
+        "cache_exact_hits": exact_hits,
+        "cache_semantic_hits": semantic_hits,
+        "cache_hit_rate": (round(total_cache_hits / answerable, 3)
+                           if answerable else None),
+        "gpt_generations": generated,
+        "semantic_similarity_avg": (round(float(sim_avg), 4)
+                                    if sim_avg is not None else None),
+        "semantic_similarity_min": (round(float(sim_min), 4)
+                                    if sim_min is not None else None),
         "unique_visitors": totals[1],
         "sessions": totals[2],
         "avg_ttft_ms": round(totals[3]) if totals[3] else None,

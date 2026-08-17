@@ -10,15 +10,18 @@ import os
 import re
 import time
 
+from collections import OrderedDict
+
 from rank_bm25 import BM25Okapi
 
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from rag import load_vector_store, build_vector_store
+from rag import load_vector_store, build_vector_store, get_embeddings, EMBEDDING_MODEL
 import projects
 import analytics   # conversation log + answer cache (backend/analytics.py)
+import semantic_cache   # in-memory FAISS index over cached-question vectors
 
 
 vector_db = None
@@ -33,6 +36,19 @@ async def lifespan(app: FastAPI):
     vector_db = load_vector_store()
     build_bm25()   # keyword index over the same chunks FAISS just loaded
     await analytics.startup()   # opens the DB; on failure it disables itself
+    if SEMANTIC_CACHE_ENABLED:
+        # Rehydrate the in-memory question index from vectors ALREADY stored
+        # in answer_cache. Pure local work — zero OpenAI calls at boot, no
+        # matter how many rows exist. Rows without embeddings (written before
+        # this feature, or while it was disabled) are skipped, not re-embedded:
+        # they still serve exact hits and the TTL retires them within days.
+        try:
+            entries = await analytics.load_semantic_entries(EMBEDDING_MODEL)
+            n = await semantic_cache.cache_index.load(entries)
+            print(f"[semantic-cache] ready ({n} question vectors, "
+                  f"threshold {SEMANTIC_CACHE_THRESHOLD})")
+        except Exception as e:   # cache starts empty; /chat is unaffected
+            print(f"[semantic-cache] startup load failed: {e!r}")
     yield
     await analytics.shutdown()  # let in-flight log writes land
 
@@ -100,6 +116,59 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 DAILY_CHAT_BUDGET = int(os.getenv("DAILY_CHAT_BUDGET", "300"))
 _daily_usage = {"day": date.today().isoformat(), "count": 0}
+
+# ------------------------------------------------------------------------------
+# SEMANTIC CACHE config. All optional; unset = sensible defaults; the ENABLED
+# flag is the rollback switch — 0 restores the exact-cache → RAG → GPT
+# pipeline byte-for-byte (retrieve_docs embeds internally again, cache rows
+# are written without vectors).
+#
+# THRESHOLD is the primary safety gate: reuse a cached answer only if the
+# new question's cosine similarity to a cached question clears it. 0.92 is a
+# deliberately conservative starting point for text-embedding-3-small — a
+# wrong-but-confident cached answer on a portfolio costs more than one extra
+# gpt-4o-mini generation ever will. Tune it with evidence, not vibes:
+# evals/eval_semantic_threshold.py sweeps candidate values over golden
+# questions + labeled paraphrase pairs, and /admin/analytics reports the
+# similarity distribution of real hits.
+#
+# MIN_MARGIN is an optional second gate: top hit must beat the runner-up by
+# this much, else the query "sits between" two cached questions and we
+# prefer a miss. 0 disables it — the right default while the cache is small
+# enough that near-ties are rare.
+# ------------------------------------------------------------------------------
+
+SEMANTIC_CACHE_ENABLED = os.getenv("SEMANTIC_CACHE_ENABLED", "1") == "1"
+SEMANTIC_CACHE_THRESHOLD = float(os.getenv("SEMANTIC_CACHE_THRESHOLD", "0.92"))
+SEMANTIC_CACHE_MIN_MARGIN = float(os.getenv("SEMANTIC_CACHE_MIN_MARGIN", "0"))
+
+# Tiny in-process LRU: normalized question -> query embedding. Catches
+# re-punctuated / re-cased repeats of RECENT questions ("skills?" then
+# "skills!!") without an OpenAI call, and also makes retries free. Bounded
+# and in-memory only — deliberately NOT a second persistent store.
+_EMBED_LRU_MAX = 128
+_embed_lru: "OrderedDict[str, list[float]]" = OrderedDict()
+
+
+async def embed_query_cached(message: str) -> list[float] | None:
+    """The ONE place /chat gets a query embedding. Returns None on failure
+    so callers can fall back to the legacy path (retrieve_docs embedding
+    internally) — an OpenAI embedding hiccup must degrade the cache, never
+    break the chat."""
+    key = analytics.normalize_question(message) or message[:500]
+    hit = _embed_lru.get(key)
+    if hit is not None:
+        _embed_lru.move_to_end(key)
+        return hit
+    try:
+        vec = await get_embeddings().aembed_query(message)
+    except Exception as e:
+        print(f"[semantic-cache] embed_query failed: {e!r}")
+        return None
+    _embed_lru[key] = vec
+    if len(_embed_lru) > _EMBED_LRU_MAX:
+        _embed_lru.popitem(last=False)
+    return vec
 
 
 def daily_budget_spent() -> bool:
@@ -330,15 +399,29 @@ def _rrf_merge(ranked_lists, c: int = 60):
     return [doc for _, doc in sorted(fused.values(), key=lambda e: -e[0])]
 
 
-async def retrieve_docs(message: str, k: int = 8, keep: int = 5):
+async def retrieve_docs(message: str, k: int = 8, keep: int = 5,
+                        query_embedding: list[float] | None = None):
     """Pull k candidates from EACH retriever, fuse, drop currently-hidden
     repos, keep the best `keep`. Repo names compared case-insensitively.
     Chunks are ~700 chars now (see rag.load_project_documents), so 5 chunks
     cost FEWER tokens than the old 3 whole-README docs. Requires `vector_db`
     to be loaded (lifespan does this for the server; the eval script sets it
-    explicitly)."""
+    explicitly).
+
+    `query_embedding`: /chat already embedded the question once for the
+    semantic-cache lookup, so dense retrieval REUSES that exact vector via
+    the by-vector FAISS API instead of paying for a second embedding of the
+    same string (asimilarity_search embeds internally). One cache-miss
+    request = one embedding call, total. BM25 always gets the raw STRING —
+    keyword scoring has no use for a vector. When no vector is supplied
+    (eval script, debug endpoint, embed failure, feature off) the original
+    embed-inside-search path runs unchanged."""
     hidden = projects.get_hidden_set()  # lowercased
-    dense = await vector_db.asimilarity_search(message, k=k)
+    if query_embedding is not None:
+        dense = await vector_db.asimilarity_search_by_vector(
+            query_embedding, k=k)
+    else:
+        dense = await vector_db.asimilarity_search(message, k=k)
     sparse = _bm25_search(message, k=k)
     merged = _rrf_merge([dense, sparse])
     return [
@@ -405,12 +488,52 @@ async def chat(request: Request, req: ChatRequest):
             yield SSE_DONE
         return sse_response(over_budget())
 
+    # 0.5) SEMANTIC CACHE. Placed AFTER the daily-budget check on purpose:
+    #    this step spends an OpenAI embedding call, and the budget's job is
+    #    to bound the worst-case OpenAI bill — so it must gate EVERY paid
+    #    call, embeddings included. The trade: a semantic hit consumes one
+    #    budget slot (like any answered request) but turns that slot's cost
+    #    from a generation into an embedding, roughly two orders of
+    #    magnitude cheaper. Exact hits stay ABOVE the budget check and stay
+    #    completely free. Worst-case daily spend can only go DOWN.
+    #
+    #    The embedding generated here is reused for document retrieval below
+    #    on a miss — one embedding per request, used twice, never generated
+    #    twice.
+    query_vec: list[float] | None = None
+    if SEMANTIC_CACHE_ENABLED:
+        query_vec = await embed_query_cached(req.message)
+        if query_vec is not None:
+            found = await semantic_cache.cache_index.lookup(
+                query_vec, SEMANTIC_CACHE_THRESHOLD, SEMANTIC_CACHE_MIN_MARGIN)
+            if found is not None:
+                cache_id, sim = found
+                # The index only NOMINATES; the DB row is the authority on
+                # TTL and knowledge version. None => expired/stale/deleted:
+                # drop the dangling vector and fall through to real RAG.
+                cached_sem = await analytics.cache_get_by_id(cache_id)
+                if cached_sem is None:
+                    semantic_cache.cache_index.remove_later(cache_id)
+                else:
+                    ms = int((time.perf_counter() - t0) * 1000)
+                    analytics.log_turn_bg(
+                        **who, answer=cached_sem, status="semantic_hit",
+                        model="semantic-cache", cache_similarity=round(sim, 4),
+                        ttft_ms=ms, total_ms=ms)
+
+                    async def replay_semantic():
+                        yield ": ok\n\n"
+                        yield sse_token(cached_sem)
+                        yield SSE_DONE
+                    return sse_response(replay_semantic())
+
     # 1) RETRIEVAL. We pull a few EXTRA chunks (k=6) then drop any that belong
     #    to a currently-hidden repo, and keep the best 3. This is a live safety
     #    net: even if the index was built before you hid something, the hidden
     #    project's text can't reach the model on this request. The logic lives
     #    in retrieve_docs() above so the RAGAS eval exercises this same path.
-    visible_docs = await retrieve_docs(req.message)
+    #    query_vec (if we have one) is REUSED here — see retrieve_docs().
+    visible_docs = await retrieve_docs(req.message, query_embedding=query_vec)
     context = "\n".join(d.page_content for d in visible_docs)
     sources = sorted({d.metadata.get("repo") for d in visible_docs
                       if d.metadata.get("repo")})
@@ -483,7 +606,16 @@ async def chat(request: Request, req: ChatRequest):
                 total_ms=int((time.perf_counter() - t0) * 1000),
             )
             if status == "ok":
-                analytics.cache_put_bg(req.message, answer)
+                # The embedding stored with the row is the SAME vector this
+                # request already generated (and used for retrieval) — the
+                # background write re-embeds nothing. If query_vec is None
+                # (feature off / embed failed) the row is exact-match only.
+                analytics.cache_put_bg(
+                    req.message, answer,
+                    embedding=query_vec,
+                    embedding_model=(EMBEDDING_MODEL
+                                     if query_vec is not None else None),
+                    knowledge_version=analytics.get_knowledge_version())
 
     return sse_response(token_stream())
 
@@ -517,6 +649,14 @@ def _rebuild_index():
     build_vector_store()
     vector_db = load_vector_store()
     build_bm25()   # keyword index must track the new chunk set too
+    # The knowledge base just changed, so every answer cached before this
+    # point describes a world that no longer exists. Minting a new version
+    # makes BOTH cache levels refuse those rows immediately (lazy-deleted on
+    # touch). hide/unhide additionally queue a full cache_clear — belt and
+    # braces — but the version bump also protects any FUTURE caller of this
+    # function that forgets to clear. Safe from this worker thread: the DB
+    # write is scheduled onto the app's event loop.
+    analytics.bump_knowledge_version_bg()
 
 
 @app.get("/admin/projects")
@@ -579,9 +719,17 @@ async def admin_transcripts(limit: int = 50, visitor_id: str | None = None,
 
 @app.get("/admin/cache")
 async def admin_cache(x_admin_token: str | None = Header(default=None)):
-    """What's cached right now, most-reused first."""
+    """What's cached right now, most-reused first — plus semantic-cache
+    state (config + live vector count). Raw vectors are never exposed."""
     _check_admin(x_admin_token)
-    return {"cached": await analytics.cache_list()}
+    return {
+        "cached": await analytics.cache_list(),
+        "semantic_enabled": SEMANTIC_CACHE_ENABLED,
+        "semantic_index_size": semantic_cache.cache_index.size(),
+        "semantic_threshold": SEMANTIC_CACHE_THRESHOLD,
+        "semantic_min_margin": SEMANTIC_CACHE_MIN_MARGIN,
+        "knowledge_version": analytics.get_knowledge_version(),
+    }
 
 
 @app.post("/admin/cache-clear")
