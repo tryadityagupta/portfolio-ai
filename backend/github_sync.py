@@ -108,3 +108,40 @@ def fetch_repos(include_readme: bool = False) -> list[dict]:
         projects.append(item)
 
     return projects
+
+
+def fetch_commits(repo_name: str, max_commits: int = 200) -> list[dict]:
+    """
+    Newest-first commit history for one repo:
+
+        [{"date": "2026-08-19", "message": "feat: add semantic cache"}, ...]
+
+    Only the first line of each message (git's subject-line convention) and
+    the author date, day precision — that's all the chatbot needs and it
+    keeps the embedded documents small. Pages through the API at 100 per
+    call until max_commits or the history ends; every failure fails SOFT to
+    whatever was collected so far (possibly []), same contract as the rest
+    of this file. Merge commits are kept: "Merge pull request #1 ..." is a
+    real, informative event in a project's story.
+    """
+    commits: list[dict] = []
+    page, per_page = 1, 100
+    while len(commits) < max_commits:
+        data = _get(
+            f"https://api.github.com/repos/{GITHUB_USERNAME}/{repo_name}"
+            f"/commits?per_page={per_page}&page={page}"
+        )
+        if not data or not isinstance(data, list):
+            break
+        for c in data:
+            info = c.get("commit") or {}
+            message = (info.get("message") or "").strip().split("\n")[0][:200]
+            date = ((info.get("author") or {}).get("date") or "")[:10]
+            if message:
+                commits.append({"date": date, "message": message})
+            if len(commits) >= max_commits:
+                break
+        if len(data) < per_page:
+            break
+        page += 1
+    return commits
