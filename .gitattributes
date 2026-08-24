@@ -1,0 +1,17 @@
+# Line-ending policy: the repo is LF. A Windows checkout had flipped every
+# file to CRLF, which turns one-line edits into whole-file diffs and destroys
+# git blame. text=auto + explicit eol=lf makes git store LF regardless of the
+# editor; binary entries stop git from ever "normalizing" real binaries.
+* text=auto
+*.py   text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+*.txt  text eol=lf
+*.html text eol=lf
+*.css  text eol=lf
+*.js   text eol=lf
+*.png  binary
+*.jpg  binary
+*.pdf  binary
+*.faiss binary
+*.pkl  binary
