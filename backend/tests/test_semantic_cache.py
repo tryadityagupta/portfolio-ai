@@ -399,3 +399,48 @@ async def test_startup_load_skips_other_models_vectors(env):
 
     entries = await analytics.load_semantic_entries(app_main.EMBEDDING_MODEL)
     assert entries == [], "cross-model vectors must never enter the index"
+
+
+async def test_near_miss_similarity_is_logged_on_the_generated_row(env):
+    """OBSERVABILITY INVARIANT: a below-threshold miss must record HOW CLOSE
+    it came, not just that it missed.
+
+    Q_PY sits at cos 0.90 to the seeded question — under the 0.92 gate, so
+    the request pays for a generation. Before this was logged, that row and
+    a row for a totally unrelated question looked identical (both NULL), so
+    the analytics table could not answer "is my threshold too high?". The
+    0.90 here is what lets you sort misses by proximity and retune with
+    evidence instead of guessing."""
+    await _seed(env)
+
+    await chat(env, Q_PY)
+
+    async with analytics._Session() as s:
+        row = (await s.execute(
+            select(analytics.ChatTurn)
+            .where(analytics.ChatTurn.question == Q_PY))
+        ).scalars().first()
+
+    assert row is not None
+    assert row.status == "ok", "0.90 is under the gate, so this must regenerate"
+    assert row.cache_similarity is not None, "a miss must still record the top score"
+    assert abs(row.cache_similarity - 0.90) < 1e-3
+
+
+async def test_unrelated_question_logs_a_low_similarity_not_null(env):
+    """The other half of the same invariant: an orthogonal question logs a
+    NEAR-ZERO similarity, which is what distinguishes 'compared and nowhere
+    close' from 'never compared at all' (feature off / embed failed -> NULL)."""
+    await _seed(env)
+
+    await chat(env, Q_OTHER)
+
+    async with analytics._Session() as s:
+        row = (await s.execute(
+            select(analytics.ChatTurn)
+            .where(analytics.ChatTurn.question == Q_OTHER))
+        ).scalars().first()
+
+    assert row is not None
+    assert row.cache_similarity is not None
+    assert row.cache_similarity < 0.5

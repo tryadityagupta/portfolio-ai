@@ -1,5 +1,5 @@
 """
-Test fixtures for the semantic cache.
+Test fixtures for the semantic cache and the conversation layer.
 
 Everything network-shaped is replaced with counting fakes, because the tests'
 whole job is to assert HOW MANY paid calls each cache path makes:
@@ -7,6 +7,7 @@ whole job is to assert HOW MANY paid calls each cache path makes:
     exact hit      -> 0 embeddings, 0 GPT, 0 retrieval
     semantic hit   -> 1 embedding,  0 GPT, 0 retrieval
     miss           -> 1 embedding (reused by FAISS), 1 GPT
+    follow-up      -> all of the above, plus exactly 1 condense call
 
 FakeEmbeddings maps known question strings to hand-placed unit vectors whose
 pairwise cosines are EXACT by construction (2-D rotations), so threshold
@@ -16,6 +17,18 @@ tests don't depend on a real embedding model's behavior:
     Q_PARA  cos 0.95 to Q_BASE   (paraphrase        -> above 0.92 threshold)
     Q_PY    cos 0.90 to Q_BASE   ("...using Python" -> below threshold)
     Q_OTHER [0, 0, 1]            (unrelated         -> orthogonal)
+    Q_HINDI cos 0.95 to Q_BASE   (same meaning, Devanagari script -> the
+                                  language guard, not the threshold, must
+                                  be what refuses this one)
+
+FakeGPT now speaks both dialects main.py uses: stream=True for answers
+(recorded in .prompts so tests can inspect the exact messages the model
+saw) and stream=False for question condensation (.condense_map decides the
+rewrite; identity by default; .condense_error simulates an OpenAI outage).
+
+projects.get_visible_projects is stubbed with FAKE_PROJECTS so the roster
+that main.py now injects into every prompt is deterministic and the suite
+never touches GitHub.
 
 Each test gets its own temp SQLite file and a fully reset module state
 (analytics engine, semantic index, embed LRU, BM25, daily budget), so tests
@@ -54,6 +67,9 @@ Q_PY = "Which projects has Aditya built using Python?"
 Q_OTHER = "Where did Aditya study?"
 Q_SKILLS = "What are Aditya's main AI skills?"
 Q_SKILLS_PARA = "Which AI and ML technologies does Aditya know?"
+# Same meaning as Q_BASE, Devanagari script. Cosine 0.95 clears the 0.92
+# threshold on purpose: only the cross-script language guard may refuse it.
+Q_HINDI = "आदित्य ने कौन से प्रोजेक्ट बनाए हैं?"
 
 
 def _vec_at(cos_to_base: float) -> list[float]:
@@ -69,7 +85,19 @@ VECTORS = {
     Q_OTHER: [0.0, 0.0, 1.0],
     Q_SKILLS: [0.0, 1.0, 0.0],
     Q_SKILLS_PARA: [math.sqrt(1 - 0.94 ** 2), 0.94, 0.0],  # cos 0.94 to SKILLS
+    Q_HINDI: _vec_at(0.95),
 }
+
+# What projects.get_visible_projects returns inside tests — two entries with
+# deliberately different pushed_at dates so roster ordering is assertable.
+FAKE_PROJECTS = [
+    {"repo": "careroute", "name": "CareRoute",
+     "type": "Agentic AI · LangGraph", "tech": [], "description": "",
+     "url": None, "homepage": None, "pushed_at": "2026-07-01T09:00:00Z"},
+    {"repo": "portfolio-ai", "name": "Portfolio AI Chatbot",
+     "type": "Generative AI · RAG", "tech": [], "description": "",
+     "url": None, "homepage": None, "pushed_at": "2026-08-21T09:00:00Z"},
+]
 
 
 class FakeEmbeddings:
@@ -123,11 +151,25 @@ class FakeVectorDB:
 
 
 class FakeGPT:
-    """Stands in for main.client (AsyncOpenAI). Streams a canned answer in
-    chunks shaped like the real SDK objects (delta/choices/usage)."""
+    """Stands in for main.client (AsyncOpenAI).
+
+    stream=True  -> the ANSWER path: streams a canned answer in chunks shaped
+                    like the real SDK objects, counts into .calls, and records
+                    the full messages array into .prompts so tests can assert
+                    exactly what the model was shown (history, roster, prompt).
+    stream=False -> the CONDENSE path: counts into .condense_calls and returns
+                    .condense_map[latest user message] (identity when unmapped)
+                    as a normal chat completion. Set .condense_error = True to
+                    simulate the call failing, which must degrade /chat to
+                    answer-with-history-but-skip-caches."""
 
     def __init__(self):
-        self.calls = 0
+        self.calls = 0                      # streamed ANSWER generations only
+        self.condense_calls = 0
+        self.condense_map: dict[str, str] = {}
+        self.condense_error = False
+        self.prompts: list[list[dict]] = []           # messages per answer
+        self.condense_prompts: list[list[dict]] = []  # messages per condense
         self.answer = ("Aditya has built portfolio-ai, an AI-powered "
                        "portfolio chatbot with hybrid retrieval and "
                        "streaming answers over SSE.")
@@ -135,7 +177,20 @@ class FakeGPT:
             completions=SimpleNamespace(create=self._create))
 
     async def _create(self, **kwargs):
+        if not kwargs.get("stream"):
+            # ---- condense path -------------------------------------------
+            self.condense_calls += 1
+            self.condense_prompts.append(kwargs.get("messages", []))
+            if self.condense_error:
+                raise RuntimeError("simulated condense outage")
+            latest = kwargs["messages"][-1]["content"]
+            rewritten = self.condense_map.get(latest, latest)
+            return SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content=rewritten))])
+
+        # ---- streamed answer path ----------------------------------------
         self.calls += 1
+        self.prompts.append(kwargs.get("messages", []))
         text = self.answer
 
         async def stream():
@@ -179,6 +234,13 @@ async def env(tmp_path, monkeypatch):
     monkeypatch.setattr(app_main, "SEMANTIC_CACHE_ENABLED", True)
     monkeypatch.setattr(app_main, "SEMANTIC_CACHE_THRESHOLD", 0.92)
     monkeypatch.setattr(app_main, "SEMANTIC_CACHE_MIN_MARGIN", 0.0)
+    monkeypatch.setattr(app_main, "CHAT_HISTORY_TURNS", 4)
+
+    # The roster main.py injects into every prompt is built from
+    # projects.get_visible_projects — stub it so tests are hermetic (no
+    # GitHub) and the roster content/ordering is assertable.
+    monkeypatch.setattr(app_main.projects, "get_visible_projects",
+                        lambda **kw: [dict(p) for p in FAKE_PROJECTS])
 
     # Reset every piece of module-level state previous tests could have bent.
     app_main._embed_lru.clear()
@@ -209,9 +271,14 @@ async def env(tmp_path, monkeypatch):
     await semantic_cache.cache_index.reset()
 
 
-async def chat(env, message: str) -> str:
-    """POST /chat and reassemble the streamed SSE tokens into the answer."""
-    r = await env.client.post("/chat", json={"message": message})
+async def chat(env, message: str, session_id: str | None = None) -> str:
+    """POST /chat and reassemble the streamed SSE tokens into the answer.
+    Pass session_id to exercise the conversational-memory path — turns of
+    the same session become history for the next call."""
+    payload = {"message": message}
+    if session_id is not None:
+        payload["session_id"] = session_id
+    r = await env.client.post("/chat", json=payload)
     assert r.status_code == 200
     parts = []
     for line in r.text.splitlines():

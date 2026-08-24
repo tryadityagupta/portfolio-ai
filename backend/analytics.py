@@ -170,9 +170,12 @@ class ChatTurn(Base):
         Integer)   # time to first token
     total_ms: Mapped[int | None] = mapped_column(Integer)
     cache_similarity: Mapped[float | None] = mapped_column(
-        Float)   # cosine score, set only on status == "semantic_hit" rows —
-    # lets /admin/analytics show the observed similarity distribution, which
-    # is the evidence for tuning SEMANTIC_CACHE_THRESHOLD later.
+        Float)   # top cosine score this request saw in the semantic index.
+    # On "semantic_hit" rows it's the similarity that was served; on "ok"
+    # rows it's how CLOSE the best cached question came before we paid for a
+    # generation (NULL = never compared: feature off / embed failed / empty
+    # index). Sorting misses by this column is the evidence for tuning
+    # SEMANTIC_CACHE_THRESHOLD.
 
     __table_args__ = (
         Index("ix_turns_created_at", "created_at"),
@@ -405,6 +408,38 @@ def log_turn_bg(**fields) -> None:
         task.add_done_callback(_pending.discard)
     except RuntimeError:
         pass                                     # no running loop
+
+
+async def recent_turns(session_id: str | None,
+                       limit: int) -> list[tuple[str, str]]:
+    """The last `limit` COMPLETED question/answer pairs of one browser
+    session, oldest first — the raw material for conversational memory.
+
+    Only turns a visitor actually saw an answer for count as context:
+    status ok / cache_hit / semantic_hit. Aborted, errored, over-budget and
+    not-ready rows are excluded — replaying half an answer as "what the
+    assistant said" would teach the model the wrong conversation. Same
+    fail-soft contract as everything else here: any problem returns [] and
+    /chat degrades to single-turn behaviour."""
+    if not session_id or limit <= 0 or _Session is None:
+        return []
+    try:
+        async with _Session() as s:
+            rows = (await s.execute(
+                select(ChatTurn.question, ChatTurn.answer)
+                .where(ChatTurn.session_id == session_id,
+                       ChatTurn.status.in_(
+                           ("ok", "cache_hit", "semantic_hit")),
+                       ChatTurn.question.is_not(None),
+                       ChatTurn.answer.is_not(None),
+                       ChatTurn.answer != "")
+                .order_by(ChatTurn.created_at.desc(), ChatTurn.id.desc())
+                .limit(limit)
+            )).all()
+        return [(q, a) for q, a in reversed(rows)]
+    except Exception as e:
+        print(f"[analytics] recent_turns failed: {e!r}", file=sys.stderr)
+        return []
 
 
 async def _write_turn(fields: dict) -> None:

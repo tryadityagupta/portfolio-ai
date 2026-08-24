@@ -173,9 +173,9 @@ class SemanticCacheIndex:
     # -- the hot path ------------------------------------------------------
 
     async def lookup(self, vec: list[float] | np.ndarray, threshold: float,
-                     min_margin: float = 0.0) -> tuple[int, float] | None:
-        """Return (cache_id, cosine_similarity) of the best cached question,
-        or None. Two gates, both tunable via env (see main.py):
+                     min_margin: float = 0.0) -> tuple[int | None, float]:
+        """Return (cache_id_or_None, top_cosine_similarity). Two gates, both
+        tunable via env (see main.py):
 
           1. top similarity >= threshold           — the primary safety gate
           2. top - runner_up >= min_margin         — optional ambiguity gate
@@ -186,27 +186,37 @@ class SemanticCacheIndex:
         sits between them semantically — exactly when reusing either answer
         is risky — so with a margin configured we prefer a miss. False
         negatives cost one extra generation; false positives cost a wrong
-        answer on the portfolio. We buy the former."""
+        answer on the portfolio. We buy the former.
+
+        WHY THE SIMILARITY COMES BACK ON A MISS TOO: this used to return a
+        bare None, so every miss looked identical in the logs — a 0.91
+        near-miss that wants a lower threshold was indistinguishable from an
+        unrelated question, a failed embed, or an empty index. The caller
+        logs this number, which turns "why didn't that hit?" from a code-
+        reading exercise into a column you can sort. 0.0 means no comparison
+        happened at all (empty index, wrong dim, or an exception)."""
         try:
             async with self._lock:
                 if self._index is None or self._index.ntotal == 0:
-                    return None
+                    return None, 0.0
                 arr = np.asarray(vec, dtype="float32")
                 if arr.shape[-1] != self._dim:
-                    return None
+                    return None, 0.0
                 k = min(2, self._index.ntotal)
                 sims, ids = self._index.search(_unit_rows(arr), k)
             top_sim = float(sims[0][0])
             top_id = int(ids[0][0])
-            if top_id == -1 or top_sim < threshold:
-                return None
+            if top_id == -1:
+                return None, 0.0
+            if top_sim < threshold:
+                return None, top_sim          # near-miss: threshold too high?
             if min_margin > 0.0 and k == 2 and int(ids[0][1]) != -1:
                 if top_sim - float(sims[0][1]) < min_margin:
-                    return None
+                    return None, top_sim      # rejected as ambiguous
             return top_id, top_sim
         except Exception as e:
             print(f"[semantic-cache] lookup failed: {e!r}", file=sys.stderr)
-            return None
+            return None, 0.0
 
     def size(self) -> int:
         return int(self._index.ntotal) if self._index is not None else 0

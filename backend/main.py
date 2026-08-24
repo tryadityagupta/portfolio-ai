@@ -8,7 +8,9 @@ from datetime import date
 import json
 import os
 import re
+import sys
 import time
+import asyncio
 
 from collections import OrderedDict
 
@@ -115,6 +117,10 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 DAILY_CHAT_BUDGET = int(os.getenv("DAILY_CHAT_BUDGET", "300"))
+
+# How many completed Q/A pairs of the SAME browser session are replayed to the
+# model as real conversation turns. 0 disables memory entirely.
+CHAT_HISTORY_TURNS = int(os.getenv("CHAT_HISTORY_TURNS", "4"))
 _daily_usage = {"day": date.today().isoformat(), "count": 0}
 
 # ------------------------------------------------------------------------------
@@ -239,7 +245,16 @@ async def list_projects():
 SYSTEM_PROMPT_BASE = """
 You are an AI assistant on Aditya Gupta's personal portfolio website.
 Your job is to answer questions about Aditya in a professional, friendly, and confident tone.
-Answer only about Aditya. If asked anything completely unrelated to him, politely redirect.
+Answer only questions about Aditya. If a visitor asks about a DIFFERENT SUBJECT
+(current events, general coding help, homework, other people), politely redirect.
+
+Earlier turns of this conversation may be included before the latest message. Use
+them to resolve follow-ups ("it", "that project", "the second one").
+
+Requests about HOW to answer are NOT off-topic and must be obeyed: language, length,
+tone, formatting, "explain more simply", "in bullet points", "shorter". Apply them to
+the question they refer to — including a question you already answered earlier in
+this conversation.
  
 --- STRICT RULES (always follow these, they override the context) ---
  
@@ -255,10 +270,36 @@ RULE 3 — Date of joining / notice period questions:
 If someone asks when Aditya can join or what his notice period is, say:
 "For specific availability and joining timelines, it's best to connect directly with Aditya at adityagupta.nits2@gmail.com — he'll be happy to discuss."
 
+--- LANGUAGE ---
+Reply in the language the visitor writes in — English, Hindi, Hinglish, or romanized
+Hindi. Match their script: if they write Hindi in Latin letters, answer the same way.
+If they ask you to switch languages, switch — including when they want an earlier
+answer from this conversation repeated in the new language.
+Keep proper nouns in English: names, company names, job titles, technology and project
+names. Do not translate "Quality Engineer" or "LangGraph".
+
 --- GENERAL TONE ---
 - Be warm, professional, and concise (2-5 sentences unless more detail is clearly needed).
+- Length applies per answer. Do not lengthen replies just because the conversation has gone on.
 - If a recruiter is asking, sound like Aditya's advocate — highlight his strengths naturally.
 - Never make up facts. If something isn't in the context, say you don't have that detail and suggest they email Aditya.
+
+--- EXACT TECHNOLOGY NAMES ---
+A project's technologies are the ones in that project's own context block. The
+general "skills" list is Aditya-wide and belongs to no single project — never use
+it to claim a specific project uses a technology.
+Never carry a technology from one project's block into a claim about a different
+project. If a question names a specific technology, answer only for the projects
+whose context explicitly lists it, and say nothing about the others.
+Similar names are different things: LangChain is not LangGraph, GPT-4o is not
+GPT-4o-mini, FAISS is not Pinecone.
+
+--- COMPLETE PROJECT LIST ---
+The context contains a COMPLETE PROJECT LIST block. It is exhaustive and ordered by
+most recent GitHub push. Use it whenever the visitor asks to list his projects, how
+many there are, or what Aditya is working on RIGHT NOW — the top entry is the most
+recently active project, and each project's "Recent development activity" context
+has the commit-level detail.
 """
 
 _PRIVATE_RULES_PATH = os.path.join(_BASE_DIR, "data", "private_rules.txt")
@@ -317,6 +358,81 @@ Question:
 
 Answer based on the context and the rules in your system instructions:
 """
+
+
+# ---------------------------------------------------------------------------
+# CONVERSATIONAL MEMORY helpers.
+#
+# The pipeline (both cache levels, retrieval, the eval harness) is built
+# around ONE self-contained question. Follow-ups ("tell me more about it",
+# "shorter", "in Hindi") are not self-contained, so instead of teaching every
+# stage about history we REWRITE the follow-up into a standalone question
+# first, then run the unchanged pipeline on that. Two things fall out for
+# free: retrieval embeds a real question instead of "tell me more about it",
+# and the cache key is context-free BY CONSTRUCTION, so history turns can
+# safely read AND write the shared answer cache.
+# ---------------------------------------------------------------------------
+
+CONDENSE_SYSTEM = (
+    "You rewrite the visitor's LATEST message in a portfolio-chatbot "
+    "conversation as ONE fully self-contained question about Aditya Gupta. "
+    "Use the earlier turns only to resolve references like \"it\", \"that "
+    "project\", \"the second one\", \"shorter\", \"in Hindi\". Keep the "
+    "visitor's language and script exactly as written. Preserve any "
+    "formatting, length or language instructions as part of the rewritten "
+    "question. If the message is already self-contained, return it "
+    "unchanged. Return ONLY the rewritten question, nothing else."
+)
+
+
+async def condense_question(history: list[tuple[str, str]],
+                            message: str) -> str | None:
+    """One cheap gpt-4o-mini call that turns a follow-up into a standalone
+    question. Returns None on any failure — the caller then answers with
+    history but SKIPS both caches, because a raw follow-up is not a safe
+    cache key. Runs AFTER the daily-budget check (it is a paid call)."""
+    msgs = [{"role": "system", "content": CONDENSE_SYSTEM}]
+    for q, a in history:
+        msgs.append({"role": "user", "content": q[:300]})
+        msgs.append({"role": "assistant", "content": a[:500]})
+    msgs.append({"role": "user", "content": message})
+    try:
+        resp = await client.chat.completions.create(
+            model="gpt-4o-mini", max_tokens=150, temperature=0,
+            messages=msgs)
+        text = (resp.choices[0].message.content or "").strip()
+        return text or None
+    except Exception as e:
+        print(f"[history] condense failed: {e!r}", file=sys.stderr)
+        return None
+
+
+_DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
+
+
+def _script_of(text: str) -> str:
+    """Coarse script detector for the semantic-cache language guard.
+    'devanagari' if the text contains ANY Devanagari character, else
+    'latin'. Deliberately coarse: it cannot tell romanized Hindi from
+    English (same script — add Hinglish pairs to semantic_pairs.json and
+    let the threshold sweep handle that case), but it guarantees a Hindi-
+    script question is never answered with a cached English answer or
+    vice versa."""
+    return "devanagari" if _DEVANAGARI_RE.search(text or "") else "latin"
+
+
+async def project_roster() -> str:
+    """The exhaustive project list injected into EVERY prompt. Fixes the
+    structural bug where "list all his projects" could only ever name the
+    2-3 projects that fit in the top-5 retrieved chunks. ~80 tokens.
+    get_visible_projects() can hit GitHub when its 10-min cache is cold and
+    that call is blocking urllib, so it runs in a thread — never on the
+    event loop. Fails soft to "": a GitHub outage must not break /chat."""
+    try:
+        return await asyncio.to_thread(projects.get_project_roster)
+    except Exception as e:
+        print(f"[roster] unavailable: {e!r}", file=sys.stderr)
+        return ""
 
 
 # ------------------------------------------------------------------------------
@@ -472,12 +588,22 @@ async def chat(request: Request, req: ChatRequest):
         question=req.message,
     )
 
-    # 0) CACHE. If this exact question (ignoring case/punctuation) was
-    #    answered in the last CACHE_TTL_DAYS, replay the saved answer:
-    #    no OpenAI call, no daily-budget spend, near-zero latency. Checked
-    #    even before the vector_db readiness gate — a cached answer doesn't
-    #    need the index, so it works during cold starts too.
-    cached = await analytics.cache_get(req.message)
+    # -1) HISTORY. The frontend already sends a per-tab session_id and
+    #    analytics logs every completed turn, so memory is a DB read — no
+    #    frontend change, no new storage. Empty when session_id is missing,
+    #    memory is disabled, or this is the session's first question; in all
+    #    of those cases every step below behaves exactly as it did before
+    #    this feature existed.
+    history = await analytics.recent_turns(req.session_id, CHAT_HISTORY_TURNS)
+
+    # 0) EXACT CACHE — context-free turns only. A first question means the
+    #    raw message IS the whole question, so it is a safe cache key, and
+    #    keeping this above the readiness/budget gates preserves the free
+    #    cold-start replay path. A follow-up's meaning depends on turns the
+    #    cache key can't see ("shorter" from session A must never answer
+    #    "shorter" from session B), so with history present we look up the
+    #    cache only AFTER condensing, further down.
+    cached = None if history else await analytics.cache_get(req.message)
     if cached is not None:
         ms = int((time.perf_counter() - t0) * 1000)
         analytics.log_turn_bg(**who, answer=cached, status="cache_hit",
@@ -519,23 +645,67 @@ async def chat(request: Request, req: ChatRequest):
     #    magnitude cheaper. Exact hits stay ABOVE the budget check and stay
     #    completely free. Worst-case daily spend can only go DOWN.
     #
+    # 0.4) CONDENSE. With history, rewrite the follow-up into a standalone
+    #    question and run the WHOLE remaining pipeline on that instead. The
+    #    standalone form is what gets cache-checked, embedded, retrieved on,
+    #    asked, and cached — so "tell me more about it" can legitimately hit
+    #    the answer cached for "Explain CareRoute", and a raw follow-up
+    #    never becomes a cache key. Sits below the budget gate because it is
+    #    a paid call. If the rewrite fails we still answer (history gives
+    #    the model the context) but both cache levels sit this turn out.
+    standalone = req.message
+    caches_usable = True
+    if history:
+        condensed = await condense_question(history, req.message)
+        if condensed is None:
+            caches_usable = False
+        else:
+            standalone = condensed
+            cached = await analytics.cache_get(standalone)
+            if cached is not None:
+                ms = int((time.perf_counter() - t0) * 1000)
+                analytics.log_turn_bg(**who, answer=cached,
+                                      status="cache_hit", model="cache",
+                                      ttft_ms=ms, total_ms=ms)
+
+                async def replay_condensed():
+                    yield ": ok\n\n"
+                    yield sse_token(cached)
+                    yield SSE_DONE
+                return sse_response(replay_condensed())
+
     #    The embedding generated here is reused for document retrieval below
     #    on a miss — one embedding per request, used twice, never generated
     #    twice.
     query_vec: list[float] | None = None
+    # Best similarity this request saw in the cache index, logged on the MISS
+    # row too. Stays None when no comparison happened (feature off, embed
+    # failed) — which is a different story from "compared and fell short",
+    # and the logs have to be able to tell those apart.
+    near_miss_sim: float | None = None
     if SEMANTIC_CACHE_ENABLED:
-        query_vec = await embed_query_cached(req.message)
-        if query_vec is not None:
-            found = await semantic_cache.cache_index.lookup(
+        query_vec = await embed_query_cached(standalone)
+        if query_vec is not None and caches_usable:
+            cache_id, top_sim = await semantic_cache.cache_index.lookup(
                 query_vec, SEMANTIC_CACHE_THRESHOLD, SEMANTIC_CACHE_MIN_MARGIN)
-            if found is not None:
-                cache_id, sim = found
+            near_miss_sim = round(top_sim, 4)
+            if cache_id is not None:
+                sim = top_sim
                 # The index only NOMINATES; the DB row is the authority on
                 # TTL and knowledge version. None => expired/stale/deleted:
                 # drop the dangling vector and fall through to real RAG.
                 cached_sem = await analytics.cache_get_by_id(cache_id)
                 if cached_sem is None:
                     semantic_cache.cache_index.remove_later(cache_id)
+                elif _script_of(standalone) != _script_of(cached_sem):
+                    # LANGUAGE GUARD: cosine similarity is happily cross-
+                    # lingual, so a Hindi question can clear the threshold
+                    # against a cached ENGLISH answer. Serving it would
+                    # break the reply-in-the-visitor's-language rule, so a
+                    # cross-script nomination is treated as a miss (the
+                    # near-miss similarity above is still logged).
+                    print(f"[semantic-cache] cross-script hit refused "
+                          f"(sim={sim:.4f})", file=sys.stderr)
                 else:
                     ms = int((time.perf_counter() - t0) * 1000)
                     analytics.log_turn_bg(
@@ -549,19 +719,38 @@ async def chat(request: Request, req: ChatRequest):
                         yield SSE_DONE
                     return sse_response(replay_semantic())
 
-    # 1) RETRIEVAL. We pull a few EXTRA chunks (k=6) then drop any that belong
-    #    to a currently-hidden repo, and keep the best 3. This is a live safety
+    # 1) RETRIEVAL. We pull EXTRA candidates (k=8 per retriever) then drop
+    #    any that belong to a currently-hidden repo, and keep the best 5. This is a live safety
     #    net: even if the index was built before you hid something, the hidden
     #    project's text can't reach the model on this request. The logic lives
     #    in retrieve_docs() above so the RAGAS eval exercises this same path.
     #    query_vec (if we have one) is REUSED here — see retrieve_docs().
-    visible_docs = await retrieve_docs(req.message, query_embedding=query_vec)
+    visible_docs = await retrieve_docs(standalone, query_embedding=query_vec)
     context = "\n".join(d.page_content for d in visible_docs)
     sources = sorted({d.metadata.get("repo") for d in visible_docs
                       if d.metadata.get("repo")})
 
+    # 1.5) ROSTER — the exhaustive project list rides along on EVERY prompt.
+    #    Top-5 retrieval can never surface all projects at once, so without
+    #    this the model structurally cannot answer "list all his projects"
+    #    or "what is he working on right now".
+    roster = await project_roster()
+    if roster:
+        context = f"{context}\n\n{roster}" if context else roster
+
     # 2) AUGMENT — stuff the retrieved context into the prompt (the "A" in RAG).
-    prompt = build_prompt(context, req.message)
+    prompt = build_prompt(context, standalone)
+
+    # History rides along as REAL conversation turns, so the model resolves
+    # follow-ups natively and keeps tone/language continuity. Answers are
+    # clipped: 2-5 sentence answers fit whole, and a clipped tail costs less
+    # than the tokens it saves.
+    convo: list[dict] = [
+        {"role": "system", "content": current_system_prompt()}]
+    for h_q, h_a in history:
+        convo.append({"role": "user", "content": h_q[:300]})
+        convo.append({"role": "assistant", "content": h_a[:600]})
+    convo.append({"role": "user", "content": prompt})
 
     # 3) GENERATION — stream tokens back to the browser as they're produced.
     #    While streaming we also ACCUMULATE the answer, because the log row
@@ -580,15 +769,12 @@ async def chat(request: Request, req: ChatRequest):
             try:
                 stream = await client.chat.completions.create(
                     model="gpt-4o-mini",
-                    max_tokens=250,
+                    max_tokens=500,
                     stream=True,
                     # Without this a streamed response reports NO token
                     # counts. It adds one final chunk whose choices == [].
                     stream_options={"include_usage": True},
-                    messages=[
-                        {"role": "system", "content": current_system_prompt()},
-                        {"role": "user", "content": prompt},
-                    ],
+                    messages=convo,
                 )
                 async for chunk in stream:
                     if getattr(chunk, "usage", None):
@@ -626,14 +812,22 @@ async def chat(request: Request, req: ChatRequest):
                 completion_tokens=getattr(usage, "completion_tokens", None),
                 ttft_ms=ttft_ms,
                 total_ms=int((time.perf_counter() - t0) * 1000),
+                # How close the semantic cache came before we paid for this
+                # generation. Sort misses by this column to see whether the
+                # threshold is costing real hits.
+                cache_similarity=near_miss_sim,
             )
-            if status == "ok":
-                # The embedding stored with the row is the SAME vector this
-                # request already generated (and used for retrieval) — the
-                # background write re-embeds nothing. If query_vec is None
-                # (feature off / embed failed) the row is exact-match only.
+            if status == "ok" and caches_usable:
+                # Cached under the STANDALONE question (== the raw message on
+                # history-free turns), so the entry is context-free and safe
+                # for any future visitor. When condensation failed this turn,
+                # caches_usable is False and nothing is written. The stored
+                # embedding is the SAME vector this request already generated
+                # (and used for retrieval) — the background write re-embeds
+                # nothing. If query_vec is None (feature off / embed failed)
+                # the row is exact-match only.
                 analytics.cache_put_bg(
-                    req.message, answer,
+                    standalone, answer,
                     embedding=query_vec,
                     embedding_model=(EMBEDDING_MODEL
                                      if query_vec is not None else None),
@@ -780,6 +974,26 @@ async def admin_hide(req: RepoRequest, bg: BackgroundTasks,
     return {"ok": True, "hidden": data["hidden"],
             "note": "Frontend updates now. Chatbot forgets it within a few seconds. "
                     "Commit project_overrides.json to make this permanent across redeploys."}
+
+
+@app.post("/admin/refresh")
+async def admin_refresh(bg: BackgroundTasks,
+                        x_admin_token: str | None = Header(default=None)):
+    """The missing 'my data changed' button. Editing profile.json /
+    project_overrides.json by hand, or simply pushing new commits, used to
+    leave the chatbot answering from a stale index until the next deploy or
+    hide/unhide — only those paths rebuilt. This triggers the exact same
+    rebuild: re-embed from live GitHub (READMEs + commit history) and the
+    data files, swap the index, bump the knowledge version so BOTH cache
+    levels refuse pre-rebuild answers, and clear the cache outright."""
+    _check_admin(x_admin_token)
+    projects.invalidate_cache()
+    bg.add_task(_rebuild_index)
+    bg.add_task(analytics.cache_clear)
+    return {"ok": True,
+            "note": "Rebuilding the index from GitHub + data files in the "
+                    "background; both cache levels invalidated. Ready in a "
+                    "few seconds."}
 
 
 @app.post("/admin/unhide")
