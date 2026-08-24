@@ -88,6 +88,9 @@ def _shape_card(repo: dict, override: dict) -> dict:
         "tech": override.get("tech") or default_tech[:6],
         "url": repo.get("url"),
         "homepage": repo.get("homepage") or None,
+        # ISO timestamp of the last git push — powers the roster's "most
+        # recently active first" ordering and "working on right now" answers.
+        "pushed_at": repo.get("pushed_at"),
     }
 
 
@@ -142,6 +145,36 @@ def get_visible_projects(force_refresh: bool = False,
 
     cards.sort(key=_sort_key(pinned_lower))
     return cards
+
+
+def get_project_roster() -> str:
+    """One compact, EXHAUSTIVE block naming every visible project, most
+    recently pushed first.
+
+    Why it exists: the chatbot's retrieval keeps only the best ~5 chunks, so
+    an enumeration question ("list ALL his projects") could never see more
+    than 2-3 project docs — the model then truthfully listed only those.
+    This block rides along on every prompt (~80 tokens) so listing, counting
+    and "what is he working on right now" are always answerable; per-project
+    depth still comes from retrieval. Hidden repos never appear here for the
+    same reason they never appear anywhere: get_visible_projects() already
+    removed them."""
+    cards = get_visible_projects()
+    if not cards:
+        return ""
+    ordered = sorted(cards, key=lambda c: c.get("pushed_at") or "",
+                     reverse=True)
+    lines = []
+    for i, c in enumerate(ordered, 1):
+        date = (c.get("pushed_at") or "")[:10]
+        when = f" — last GitHub push: {date}" if date else ""
+        lines.append(f"{i}. {c['name']} ({c['type']}){when}")
+    return (
+        f"COMPLETE PROJECT LIST — all {len(ordered)} of Aditya's public "
+        "projects, most recently active first. This list is exhaustive: no "
+        "other projects exist. The top entry is the one Aditya pushed code "
+        "to most recently.\n" + "\n".join(lines)
+    )
 
 
 def invalidate_cache():
