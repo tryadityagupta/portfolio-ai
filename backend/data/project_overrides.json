@@ -3,32 +3,62 @@
   "hidden": [],
   "pinned": [
     "portfolio-ai",
-    "email-classifier",
     "ai-codebase-tutor",
     "careroute",
+    "email-classifier",
     "rag-document-chatbot",
-    "email-spam-filter",
-    "travel-ai"
+    "travel-ai",
+    "email-spam-filter"
   ],
   "overrides": {
     "portfolio-ai": {
       "display_name": "Portfolio AI Chatbot",
-      "type": "Generative AI · RAG · LLMs",
-      "description": "RAG-powered chatbot that answers questions about my portfolio using semantic search. Built with FastAPI, LangChain, FAISS, and OpenAI embeddings to retrieve context from resume PDFs and structured profile data. Auto-syncs its project knowledge from GitHub, with an admin panel to hide projects from both the site and the chatbot. Streams responses token-by-token; deployed on Render.",
+      "type": "Generative AI · RAG · Production Systems",
+      "description": "Production-deployed RAG assistant answering questions about my portfolio. Hybrid retrieval fuses FAISS dense search with BM25 using Reciprocal Rank Fusion, behind a two-level exact-then-semantic answer cache whose threshold was set by an evidence-based sweep. Streams token-by-token over SSE, syncs its project list live from GitHub, and is scored by a RAGAS eval harness. FastAPI on Render, frontend on Vercel.",
       "tech": [
+        "Python",
         "FastAPI",
         "LangChain",
         "FAISS",
+        "BM25",
         "OpenAI Embeddings",
         "GPT-4o-mini",
-        "Python"
+        "RAGAS"
+      ]
+    },
+    "ai-codebase-tutor": {
+      "display_name": "AI Codebase Tutor",
+      "type": "Agentic AI · RAG · Developer Tools",
+      "description": "An onboarding tutor for unfamiliar codebases. Runs as an agent, investigating any repo in multiple hops and citing every claim to exact file lines or a commit SHA. Hybrid BM25 + FAISS retrieval with RRF fusion, cross-encoder reranking, symbol-level AST chunking and call-graph expansion. Also generates architecture diagrams, an onboarding walkthrough, and a git-archaeology evolution doc. Every retrieval upgrade is measured with hit_rate@k, recall@k and MRR — not asserted.",
+      "tech": [
+        "Python",
+        "FastAPI",
+        "FAISS",
+        "BM25",
+        "Cross-Encoder Reranking",
+        "AST Analysis",
+        "OpenAI TTS"
+      ]
+    },
+    "careroute": {
+      "display_name": "CareRoute — Provider-Matching Agent",
+      "type": "Agentic AI · LangGraph · Healthcare",
+      "description": "An agentic assistant that reasons from a patient's complaint to the specialty they need, then calls tools to pull the clinical record and find the nearest matching providers. Built twice with proven behavioural parity — a hand-rolled tool-calling loop and a LangGraph StateGraph port — pinned by an offline golden-transcript harness needing no API key. A deterministic code-level guard withholds any provider no tool confirmed, because prompt instructions alone did not hold.",
+      "tech": [
+        "Python",
+        "LangGraph",
+        "Tool Calling",
+        "GPT-4o-mini",
+        "FastAPI",
+        "OpenStreetMap"
       ]
     },
     "email-classifier": {
       "display_name": "Email Auto-Classifier & Labeler",
       "type": "Deep Learning · NLP · Privacy-First",
-      "description": "A layered FastAPI microservice that connects to Gmail over OAuth 2.0 and auto-labels inbox mail into a fixed six-class taxonomy. Fine-tuned a local DistilBERT classifier via knowledge distillation — using GPT-4o-mini as a teacher to bootstrap the dataset — running fully on-device so email content never leaves the machine. Diagnosed a failing minority class from the confusion matrix and applied inverse-frequency class weights, lifting macro-F1 from 0.67 to 0.95.",
+      "description": "A Gmail auto-labeler sorting mail into a fixed six-class taxonomy entirely on-device, so email content never leaves the machine. The classifier is DistilBERT fine-tuned by knowledge distillation: GPT-4o-mini labels the dataset once, offline, and at inference the LLM is gone completely. Diagnosed rare-class collapse from the confusion matrix and applied inverse-frequency class weights, lifting macro-F1 from 0.67 to 0.95.",
       "tech": [
+        "Python",
         "FastAPI",
         "PyTorch",
         "Hugging Face",
@@ -37,42 +67,31 @@
         "OAuth 2.0"
       ]
     },
-    "ai-codebase-tutor": {
-      "display_name": "AI Codebase Tutor",
-      "type": "Agentic AI · RAG · Developer Tools",
-      "description": "A virtual senior engineer that ingests any GitHub repo and explains it. Combines hybrid BM25 + FAISS retrieval with cross-encoder reranking and AST-based graph traversal so answers cite the right code, an agentic tool-calling loop for multi-step questions, and a RAGAS-style evaluation harness to measure answer quality. FastAPI backend with streaming responses.",
-      "tech": [
-        "Python",
-        "FastAPI",
-        "FAISS",
-        "BM25",
-        "Cross-Encoder",
-        "LangChain"
-      ]
-    },
-    "careroute": {
-      "display_name": "CareRoute — Provider-Matching Agent",
-      "type": "Agentic AI · Tool-Calling · Healthcare",
-      "description": "An AI agent that reads a patient's symptoms, works out which specialist they need, then calls tools to look up the patient's record and find the nearest matching doctors. Added a step limit and error handling so one failed tool call can't break the whole agent. A single provider-search function pulls from three sources (sample data, OpenStreetMap, or Google Places), normalizes them into one shape, and sorts by distance with specialty matches first.",
-      "tech": [
-        "Python",
-        "GPT-4o-mini",
-        "Tool Calling",
-        "FastAPI",
-        "OpenStreetMap"
-      ]
-    },
     "rag-document-chatbot": {
-      "display_name": "RAG Document Chatbot",
-      "type": "Generative AI · RAG · LLMs",
-      "description": "Answers questions over any PDF — with sources. Built a modular pipeline using LangChain, MiniLM embeddings, and a FAISS vector store. Prompt guardrails via TinyLlama. MMR deduplication for retrieval quality. Persistent index, CLI interface, production-minded from day one.",
+      "display_name": "RAG Document Chatbot — Multimodal",
+      "type": "Generative AI · Multimodal RAG · Privacy-First",
+      "description": "Multimodal document Q&A over PDFs, scanned pages, handwritten notes and photos. A per-page router reads trustworthy text layers directly and sends scanned or corrupted pages to a vision LLM — including a trust check that catches the broken-glyph failure mode of Indic-script PDFs. Vision extraction is structured for retrieval, keeping table row and column labels intact. Nothing is persisted: each session gets its own in-memory FAISS index.",
       "tech": [
-        "LangChain",
+        "Python",
+        "FastAPI",
         "FAISS",
-        "HuggingFace",
-        "TinyLlama",
-        "MiniLM",
-        "Python"
+        "LangChain",
+        "PyMuPDF",
+        "GPT-4o Vision",
+        "text-embedding-3-small"
+      ]
+    },
+    "travel-ai": {
+      "display_name": "Voice Travel Planner",
+      "type": "Voice AI · Multi-User · LLM",
+      "description": "A voice-first travel planner for groups. Runs a guided spoken conversation, captures each participant's interests separately, and only generates the itinerary once everyone has contributed. Deliberately splits LLM work from deterministic work: group ranking is frequency aggregation and duration parsing is plain code, so the parts that must be predictable never depend on a model.",
+      "tech": [
+        "Python",
+        "FastAPI",
+        "GPT-4o",
+        "Speech-to-Text",
+        "Text-to-Speech",
+        "pyttsx3"
       ]
     },
     "email-spam-filter": {
@@ -85,18 +104,6 @@
         "Flask",
         "TF-IDF",
         "NLP"
-      ]
-    },
-    "travel-ai": {
-      "display_name": "Voice Travel Planner",
-      "type": "Voice AI · LLM · Speech",
-      "description": "A hands-free travel planner you talk to: Whisper transcribes speech, a GPT-4o-mini / GPT-4o layer plans the itinerary, and text-to-speech reads it back. FastAPI backend. (Work in progress.)",
-      "tech": [
-        "Python",
-        "Whisper",
-        "GPT-4o",
-        "FastAPI",
-        "TTS"
       ]
     }
   }
