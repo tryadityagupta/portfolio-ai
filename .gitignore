@@ -7,7 +7,7 @@ backend/data/private_rules.txt
 venv/
 .venv-eval/
 backend/evals/results/*.csv
-backend/data/private_rules.txt
 analytics.db
 main.py.bak
 portfolio_ai_chatbot_defects.md
+.pytest_cache/

@@ -16,3 +16,4 @@ sqlalchemy[asyncio]
 aiosqlite
 asyncpg
 ragas
+azure-identity

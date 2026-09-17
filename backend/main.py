@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, AsyncAzureOpenAI
 from datetime import date
 import json
 import os
@@ -20,7 +20,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from rag import load_vector_store, build_vector_store, get_embeddings, EMBEDDING_MODEL
+from rag import load_vector_store, build_vector_store, get_embeddings, EMBEDDING_MODEL, PROVIDER
 import projects
 import analytics   # conversation log + answer cache (backend/analytics.py)
 import semantic_cache   # in-memory FAISS index over cached-question vectors
@@ -66,7 +66,7 @@ app = FastAPI(lifespan=lifespan)
 ALLOWED_ORIGINS = [
     "https://ysadityagupta.co.in",
     "https://www.ysadityagupta.co.in",
-    "https://portfolio-ai-iota-one.vercel.app/",  # Vercel prod URL
+    "https://portfolio-ai-iota-one.vercel.app",  # Vercel prod URL
     "http://localhost:3000",  # Local frontend dev
     "http://127.0.0.1:5500",
     "http://localhost:5500",
@@ -189,7 +189,37 @@ def daily_budget_spent() -> bool:
     return False
 
 
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+if PROVIDER == "azure":
+    CHAT_MODEL = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-5-mini")
+    _ck = os.getenv("AZURE_OPENAI_API_KEY")
+    if _ck:
+        _cauth = {"api_key": _ck}
+    else:  # Managed Identity (Day 2)
+        from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+        _cauth = {"azure_ad_token_provider": get_bearer_token_provider(
+            DefaultAzureCredential(), "https://cognitiveservices.azure.com/.default")}
+    client = AsyncAzureOpenAI(
+        azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
+        api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21"),
+        **_cauth,
+    )
+else:
+    CHAT_MODEL = "gpt-4o-mini"
+    client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+def _chat_kwargs(max_out: int, temperature=None):
+    """Normalize params across gpt-4o-mini (OpenAI) and gpt-5-mini (Azure).
+    gpt-5 wants max_completion_tokens, rejects a custom temperature, and we
+    set reasoning_effort='minimal' so it stays fast/cheap like gpt-4o-mini."""
+    if PROVIDER == "azure":
+        return {"max_completion_tokens": max(max_out, 512),
+                "reasoning_effort": "minimal"}
+    kw = {"max_tokens": max_out}
+    if temperature is not None:
+        kw["temperature"] = temperature
+    return kw
+
 
 # A shared secret only YOU know. Set it in .env (ADMIN_TOKEN=something-long) for
 # local testing, and in Render's Environment tab for production — the two are
@@ -255,13 +285,13 @@ Requests about HOW to answer are NOT off-topic and must be obeyed: language, len
 tone, formatting, "explain more simply", "in bullet points", "shorter". Apply them to
 the question they refer to — including a question you already answered earlier in
 this conversation.
- 
+
 --- STRICT RULES (always follow these, they override the context) ---
- 
+
 RULE 1 — NEVER reveal Aditya's mobile number under any circumstance.
 If someone asks for his phone number or contact number, say:
 "I'm not able to share Aditya's phone number here. You can reach him at adityagupta.nits2@gmail.com or connect on LinkedIn."
- 
+
 RULE 2 — CTC / salary questions:
 If someone asks about Aditya's current CTC, expected CTC, or typical market rates, say:
 "That's something best discussed directly with Aditya. Feel free to reach out to him at adityagupta.nits2@gmail.com — he'd be happy to connect."
@@ -398,8 +428,8 @@ async def condense_question(history: list[tuple[str, str]],
     msgs.append({"role": "user", "content": message})
     try:
         resp = await client.chat.completions.create(
-            model="gpt-4o-mini", max_tokens=150, temperature=0,
-            messages=msgs)
+            model=CHAT_MODEL, messages=msgs,
+            **_chat_kwargs(150, temperature=0))
         text = (resp.choices[0].message.content or "").strip()
         return text or None
     except Exception as e:
@@ -768,13 +798,13 @@ async def chat(request: Request, req: ChatRequest):
             yield ": ok\n\n"
             try:
                 stream = await client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    max_tokens=500,
+                    model=CHAT_MODEL,
                     stream=True,
                     # Without this a streamed response reports NO token
                     # counts. It adds one final chunk whose choices == [].
                     stream_options={"include_usage": True},
                     messages=convo,
+                    **_chat_kwargs(500),
                 )
                 async for chunk in stream:
                     if getattr(chunk, "usage", None):
@@ -807,7 +837,7 @@ async def chat(request: Request, req: ChatRequest):
                 answer=answer,
                 sources=sources,
                 status=status,
-                model="gpt-4o-mini",
+                model=CHAT_MODEL,
                 prompt_tokens=getattr(usage, "prompt_tokens", None),
                 completion_tokens=getattr(usage, "completion_tokens", None),
                 ttft_ms=ttft_ms,

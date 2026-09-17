@@ -1,4 +1,4 @@
-from langchain_openai import OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings, AzureOpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
@@ -14,7 +14,8 @@ import projects  # our single source of truth (GitHub + hide/override rules)
 import github_sync  # commit history for the activity/evolution documents
 
 load_dotenv()
-
+# unset => current Render/OpenAI behavior
+PROVIDER = os.getenv("LLM_PROVIDER", "openai")
 
 # Resolve every path relative to THIS file, not the working directory, so it
 # behaves the same locally and on Render regardless of how uvicorn is launched.
@@ -32,20 +33,34 @@ RESUME_B64_PATH = "/etc/secrets/resume_b64.txt"
 # meaningless, so a model swap must quietly restart the cache, not corrupt it.
 EMBEDDING_MODEL = "text-embedding-3-small"
 
-_embeddings: OpenAIEmbeddings | None = None
+# was: _embeddings: OpenAIEmbeddings | None = None  (loosen the type)
+_embeddings = None
 
 
-def get_embeddings() -> OpenAIEmbeddings:
-    """The shared OpenAIEmbeddings client. Built once, reused everywhere:
-    document store build/load AND per-request query embeddings (main.py).
-    One object = one underlying HTTP client with connection pooling, instead
-    of a new client per call — and one place where the model is chosen."""
+def get_embeddings():
+    """Shared embeddings client, built once. Provider chosen by LLM_PROVIDER."""
     global _embeddings
     if _embeddings is None:
-        _embeddings = OpenAIEmbeddings(
-            model=EMBEDDING_MODEL,
-            api_key=os.getenv("OPENAI_API_KEY")
-        )
+        if PROVIDER == "azure":
+            # https://ysadityagupta.openai.azure.com/
+            _endpoint = os.environ["AZURE_OPENAI_ENDPOINT"]
+            _version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
+            # None in container after Day 2
+            _key = os.getenv("AZURE_OPENAI_API_KEY")
+            if _key:
+                _auth = {"api_key": _key}
+            else:
+                from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+                _auth = {"azure_ad_token_provider": get_bearer_token_provider(
+                    DefaultAzureCredential(), "https://cognitiveservices.azure.com/.default")}
+            _embeddings = AzureOpenAIEmbeddings(
+                azure_deployment=os.getenv(
+                    "AZURE_OPENAI_EMBED_DEPLOYMENT", EMBEDDING_MODEL),
+                azure_endpoint=_endpoint, api_version=_version, **_auth,
+            )
+        else:
+            _embeddings = OpenAIEmbeddings(
+                model=EMBEDDING_MODEL, api_key=os.getenv("OPENAI_API_KEY"))
     return _embeddings
 
 
