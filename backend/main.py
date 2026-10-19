@@ -66,7 +66,7 @@ app = FastAPI(lifespan=lifespan)
 ALLOWED_ORIGINS = [
     "https://ysadityagupta.co.in",
     "https://www.ysadityagupta.co.in",
-    "https://portfolio-ai-iota-one.vercel.app/",  # Vercel prod URL
+    "https://portfolio-ai-iota-one.vercel.app",  # Vercel prod URL
     "http://localhost:3000",  # Local frontend dev
     "http://127.0.0.1:5500",
     "http://localhost:5500",
